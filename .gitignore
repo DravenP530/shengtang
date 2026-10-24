@@ -12,6 +12,10 @@ desktop.ini
 node_modules/
 dist/
 build/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
 
 # 临时与截图中间产物
 _*.png
