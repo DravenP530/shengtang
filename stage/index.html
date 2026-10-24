@@ -109,6 +109,25 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
 .courtier.dim .lantern{background:radial-gradient(circle at 50% 34%,#42160e,#1b0604);
   box-shadow:0 0 0 rgba(0,0,0,0)}
 
+/* 名牌：认得出是谁 */
+.nameplate{position:absolute;left:50%;bottom:-24px;transform:translateX(-50%);
+  font-size:12.5px;letter-spacing:.16em;white-space:nowrap;
+  color:rgba(216,178,106,.55);transition:color .3s,text-shadow .3s;
+  text-shadow:0 1px 4px rgba(0,0,0,.9)}
+/* 腰间色带：六个司各有颜色 */
+.sash{position:absolute;left:50%;top:72px;width:32px;height:4px;
+  transform:translateX(-50%);border-radius:2px;opacity:.7;transition:opacity .3s}
+
+/* 状态动作：不靠弹窗，靠人和灯的动静 */
+.courtier[data-state="thinking"] svg{animation:sway 1.5s ease-in-out infinite}
+@keyframes sway{0%,100%{transform:rotate(0deg)}50%{transform:rotate(-2deg)}}
+.courtier[data-state="thinking"] .lantern{animation:flicker 1.1s ease-in-out infinite}
+@keyframes flicker{0%,100%{opacity:1}50%{opacity:.45}}
+.courtier[data-state="blocked"] .nameplate{color:#ff6a52;text-shadow:0 0 12px rgba(224,82,63,.7)}
+.courtier[data-state="blocked"] svg{animation:jitter .3s linear infinite}
+@keyframes jitter{0%,100%{transform:translateX(0)}50%{transform:translateX(2.5px)}}
+.courtier[data-state="done"] .nameplate{color:rgba(216,178,106,.85)}
+
 /* ============ 气泡 ============ */
 .bubble{position:absolute;padding:5px 13px;background:rgba(240,229,204,.95);color:#2a1a12;
   font-size:14px;letter-spacing:.10em;border-radius:2px;white-space:nowrap;
@@ -336,6 +355,11 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
   border:1px solid rgba(216,178,106,.22);border-radius:2px;cursor:pointer;
   font-family:inherit;font-size:12.5px;letter-spacing:.12em;transition:all .2s}
 .toolbar button:hover{color:var(--gold-b);border-color:rgba(216,178,106,.6)}
+.toolbar select{padding:6px 10px;max-width:190px;
+  background:rgba(18,9,7,.7);color:rgba(240,229,204,.82);
+  border:1px solid rgba(216,178,106,.22);border-radius:2px;
+  font-family:inherit;font-size:12.5px;letter-spacing:.06em;outline:none;cursor:pointer}
+.toolbar select:hover{color:var(--gold-b);border-color:rgba(216,178,106,.6)}
 
 /* 定妆模式：跳过过渡，直接看最终版式 */
 .pose-mode *{transition:none!important}
@@ -408,6 +432,7 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
       <div class="seal" id="seal">结案</div>
 
       <div class="toolbar">
+        <select id="modelSel" title="选择模型" style="display:none"></select>
         <button id="speedBtn">1×</button>
         <button id="resetBtn">再升一单</button>
       </div>
@@ -464,12 +489,12 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
 
   /* ---------- 队员 ---------- */
   var MEMBERS = [
-    { name:'吏部', x:130,  y:460, s:0.86 },
-    { name:'户部', x:270,  y:520, s:0.96 },
-    { name:'兵部', x:410,  y:580, s:1.06 },
-    { name:'礼部', x:1374, y:460, s:0.86 },
-    { name:'工部', x:1234, y:520, s:0.96 },
-    { name:'刑部', x:1094, y:580, s:1.06 }
+    { name:'吏部', x:130,  y:460, s:0.86, color:'#6a9fd8' },
+    { name:'户部', x:270,  y:520, s:0.96, color:'#d8b26a' },
+    { name:'兵部', x:410,  y:580, s:1.06, color:'#e0523f' },
+    { name:'礼部', x:1374, y:460, s:0.86, color:'#b48ad8' },
+    { name:'工部', x:1234, y:520, s:0.96, color:'#7fb069' },
+    { name:'刑部', x:1094, y:580, s:1.06, color:'#8a8f99' }
   ];
   var SILHOUETTE =
     '<svg viewBox="0 0 96 126" fill="currentColor" aria-hidden="true">' +
@@ -488,12 +513,32 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
     d.style.left = m.x + 'px';
     d.style.top = m.y + 'px';
     d.style.transform = 'scale(' + m.s + ')';
-    d.innerHTML = '<div class="lantern"></div>' + SILHOUETTE +
-                  '<div class="bubble" data-role="bubble"></div>';
+    d.innerHTML =
+      '<div class="lantern"></div>' + SILHOUETTE +
+      '<div class="sash" style="background:' + m.color + '"></div>' +
+      '<div class="nameplate" style="color:' + m.color + '">' + m.name + '</div>' +
+      '<div class="bubble" data-role="bubble"></div>';
     courtiers.appendChild(d);
     m.el = d;
     m.bubble = d.querySelector('[data-role="bubble"]');
+    m.nameplate = d.querySelector('.nameplate');
   });
+
+  /**
+   * 给某个司设状态。状态会驱动动作，不只是换个字：
+   *   idle     待命
+   *   thinking 思考 —— 身子轻晃、灯闪烁
+   *   blocked  卡壳 —— 名牌发红、身子抖动
+   *   done     交活 —— 名牌变亮
+   */
+  function setState(m, state, label){
+    m.el.dataset.state = state;
+    m.nameplate.textContent = label ? (m.name + '·' + label) : m.name;
+  }
+
+  function resetStates(){
+    MEMBERS.forEach(function(m){ setState(m, 'idle'); });
+  }
 
   function byName(n){
     for(var i=0;i<MEMBERS.length;i++){ if(MEMBERS[i].name === n) return MEMBERS[i]; }
@@ -522,7 +567,7 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
     el.classList.add('hide');
   }
   function shout(m, text, dissent){
-    m.bubble.textContent = text;
+    m.bubble.textContent = m.name + '　' + text;
     m.bubble.classList.toggle('dissent', !!dissent);
     m.bubble.classList.remove('show','hide');
     void m.bubble.offsetWidth;
@@ -607,11 +652,42 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
      ============================================================ */
   var LIVE = location.protocol === 'http:' || location.protocol === 'https:';
   var LIVE_TASKS = null;
+  var SELECTED_MODEL = '';
+
+  /** 拉可用模型列表，填进选择器。 */
+  function loadModels(){
+    var sel = document.getElementById('modelSel');
+    if(!sel) return;
+    if(!LIVE){ sel.style.display = 'none'; return; }
+    sel.style.display = '';
+
+    fetch('/api/models').then(function(r){ return r.json(); }).then(function(data){
+      sel.innerHTML = '';
+      var ids = data.models || [];
+      if(!ids.length){
+        var o = document.createElement('option');
+        o.textContent = data.error ? '模型列表不可用' : '无可用模型';
+        o.value = '';
+        sel.appendChild(o);
+        return;
+      }
+      ids.forEach(function(id){
+        var o = document.createElement('option');
+        o.value = id; o.textContent = id;
+        if(id === data.current) o.selected = true;
+        sel.appendChild(o);
+      });
+      SELECTED_MODEL = sel.value;
+    }).catch(function(){
+      sel.innerHTML = '<option value="">模型列表不可用</option>';
+    });
+  }
 
   /** 调后端拆单，边收事件边回报。返回 {order} 或 {error}。 */
   function fetchOrder(requirement, onEvent){
     return new Promise(function(resolve){
       var url = '/api/order?requirement=' + encodeURIComponent(requirement);
+      if(SELECTED_MODEL){ url += '&model=' + encodeURIComponent(SELECTED_MODEL); }
       var es = new EventSource(url);
       var done = false;
 
@@ -685,10 +761,10 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
         '<span class="sc-no">编号 ' + orderNo + '</span>' +
       '</div>' +
       '<div class="sc-meta">' +
-        '<p><b>目标</b>已达成（' + list.length + ' / ' + list.length + ' 项交活，全部附证据）</p>' +
-        '<p><b>勘验</b>刑部独立核验：' + list.length + ' 项全过，其中第 4 项经补证后通过</p>' +
-        '<p><b>结论</b>① 朝堂场景与「升堂」仪式跑通　② 八态全程可视　③ 附议轮可打断、可改单　④ 刑部勘验拦住了一次「无证据交活」</p>' +
-        '<p><b>待批</b>无。下一步建议：接真实 Agent，把脚本换成实时事件。</p>' +
+        '<p><b>拆单</b>已达成（' + list.length + ' 条任务，真模型生成）</p>' +
+        '<p><b>执行</b>未接入 —— 本版只到拆单，没有真的动手，也没有产生任何文件</p>' +
+        '<p><b>勘验</b>演示逻辑：' + list.length + ' 项全过，其中第 4 项经补证后通过</p>' +
+        '<p><b>待批</b>下一步把执行接上，真的产出文件到 workspace 目录。</p>' +
       '</div>' +
       '<div class="sc-deliver">' +
         '<div class="d-title">交 付 清 单</div>' + rows +
@@ -728,6 +804,7 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
     busy = true;
     send.disabled = true;
     orderNo = newOrderNo();
+    resetStates();
 
     /* 0 收起奏折 */
     composer.classList.add('fold');
@@ -820,10 +897,11 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
     var dissent = byName('兵部');
     for(var j=0;j<MEMBERS.length;j++){
       var m = MEMBERS[j];
+      setState(m, 'thinking', '思忖');
       await wait(230);
-      if(m === dissent){ shout(m, '异议', true); }
-      else if(m.name === '刑部'){ shout(m, '待勘'); }
-      else { shout(m, '附议'); }
+      if(m === dissent){ shout(m, '异议', true); setState(m, 'blocked', '异议'); }
+      else if(m.name === '刑部'){ shout(m, '待勘'); setState(m, 'idle', '待勘'); }
+      else { shout(m, '附议'); setState(m, 'done', '附议'); }
     }
     await wait(700);
 
@@ -841,6 +919,7 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
       note.classList.add('show');
     }
     await wait(2100);
+    setState(dissent, 'done', '已改单');
     hideBubble(ztBubble);
     await wait(400);
 
@@ -855,11 +934,15 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
 
     /* 9 执行：五司接活，刑部不动 */
     setPhase(3);
+    var runList = LIVE_TASKS || TASKS;
     for(var n=0;n<rows.length;n++){
+      var who = byName(runList[n] ? runList[n].owner : '');
+      if(who) setState(who, 'thinking', '执行');
       rows[n].classList.add('running');
       await wait(460);
       rows[n].classList.remove('running');
       rows[n].classList.add('done');
+      if(who) setState(who, 'done', '交活');
     }
     await wait(500);
 
@@ -869,6 +952,7 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
     var xing = byName('刑部');
     await wait(220);
     xing.el.classList.add('lit');
+    setState(xing, 'thinking', '勘验');
     say(ztBubble, '刑部勘验：只对单核证，不问过程。');
     await wait(1650);
     hideBubble(ztBubble);
@@ -882,14 +966,18 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
     var r4v = rows[3];
     r4v.classList.add('reject');
     r4v.querySelector('.mark').textContent = '✗';
+    var gongbu = byName('工部');
+    if(gongbu) setState(gongbu, 'blocked', '缺证据');
     say(ztBubble, '第 4 条只有结论、没有证据。退回工部补交。');
     await wait(1950);
     hideBubble(ztBubble);
     r4v.classList.remove('reject');
     r4v.querySelector('.mark').textContent = '✓';
+    if(gongbu) setState(gongbu, 'done', '已补证');
     say(ztBubble, '补证已到，五条全过。');
     await wait(1350);
     hideBubble(ztBubble);
+    setState(xing, 'done', '已核');
     MEMBERS.forEach(function(mm){ mm.el.classList.remove('dim'); });
     await wait(300);
 
@@ -917,7 +1005,7 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
       await wait(1400);
       await closeScroll();
       await wait(300);
-      say(ztBubble, '谢主公。此单结案，已归档。');
+      say(ztBubble, '谢主公。此单结案——执行未接入，本次没有产出文件。');
     }else if(v === 'back'){
       setPhase(2);
       say(ztBubble, '臣即改单，从「附议」重跑。');
@@ -946,6 +1034,11 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
   });
   $('#resetBtn').addEventListener('click', function(){ location.reload(); });
 
+  var modelSelEl = document.getElementById('modelSel');
+  if(modelSelEl){
+    modelSelEl.addEventListener('change', function(){ SELECTED_MODEL = this.value; });
+  }
+
   /* ---------- 真实模式标记 ---------- */
   if(LIVE){
     var bar = document.querySelector('.toolbar');
@@ -956,6 +1049,7 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
       'color:#e0523f;font-size:12.5px;letter-spacing:.12em;background:rgba(192,57,43,.12)';
     bar.insertBefore(tag, bar.firstChild);
     req.placeholder = '主公请下旨：写下真实需求，点「升堂」由模型拆单……';
+    loadModels();
   }
 
   /* ---------- 演示模式：?auto=1 自动开演（截图 / 演示用） ---------- */

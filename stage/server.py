@@ -16,10 +16,13 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import os
 import sys
 import threading
+import urllib.error
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -91,6 +94,13 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
 
+        if path == "/api/models":
+            self._send_bytes(
+                json.dumps(self._list_models(), ensure_ascii=False).encode(),
+                "application/json; charset=utf-8",
+            )
+            return
+
         if path == "/favicon.ico":
             self._send_bytes(b"", "image/x-icon", 204)
             return
@@ -112,9 +122,29 @@ class Handler(BaseHTTPRequestHandler):
 
     # ------------------------------------------------------------ 事件流
 
+    def _list_models(self) -> dict:
+        """把端点的 /models 转给前端，供模型选择器用。"""
+        base = CONFIG.resolved_fast_base_url()
+        if not base:
+            return {"models": [], "current": CONFIG.model, "error": "未配置模型地址"}
+
+        req = urllib.request.Request(f"{base}/models", method="GET")
+        key = CONFIG.resolved_fast_api_key()
+        if key:
+            req.add_header("Authorization", f"Bearer {key}")
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except Exception as exc:  # noqa: BLE001
+            return {"models": [], "current": CONFIG.model, "error": str(exc)}
+
+        ids = [m.get("id") for m in (data.get("data") or []) if m.get("id")]
+        return {"models": ids, "current": CONFIG.model}
+
     def _stream_order(self) -> None:
         qs = parse_qs(urlparse(self.path).query)
         requirement = (qs.get("requirement") or [""])[0].strip()
+        model = (qs.get("model") or [""])[0].strip()
 
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
@@ -140,10 +170,12 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         try:
-            with LLM(CONFIG) as llm:
+            # 每张单可以带自己的模型，互不影响
+            cfg = dataclasses.replace(CONFIG, model=model) if model else CONFIG
+            with LLM(cfg) as llm:
                 zt = Zhongtang(llm, max_attempts=3, on_event=emit, fast=True)
                 order = zt.issue_order(requirement)
-                emit({"type": "order/final", "order": order.to_dict()})
+                emit({"type": "order/final", "order": order.to_dict(), "model": cfg.model})
         except OrderRejected as exc:
             # 终局兜底：如实告诉前端「拆不出来」，由朝堂显示「请示主公」
             emit(
