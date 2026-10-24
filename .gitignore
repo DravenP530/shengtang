@@ -1,0 +1,25 @@
+# 系统
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+
+# 依赖与构建
+node_modules/
+dist/
+build/
+
+# 临时与截图中间产物
+_*.png
+_*.html
+*.log
+*.tmp
+
+# 本地环境
+.env
+.env.*
+*.local
