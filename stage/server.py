@@ -1,10 +1,11 @@
 """
 升堂 · 演出服务
 
-把编排器接到朝堂页面上。做三件事：
+把编排器接到朝堂页面上。做四件事：
   1. 托管朝堂页面（stage/index.html）
   2. 提供 /api/order 事件流：拆单过程中每一步都实时推给前端
   3. 把模型的失败如实转成「请示主公」，不假装成功
+  4. 提供 /api/answer：中堂问话时，主公的回答经这条 POST 送回，后端才继续拆
 
 跑法：
   python -m stage.server --model qwen3.8-27b ^
@@ -21,8 +22,10 @@ import json
 import os
 import sys
 import threading
+import time
 import urllib.error
 import urllib.request
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -42,6 +45,14 @@ CONFIG = LLMConfig.from_env()
 #: 同一时间只允许一张单在拆。浏览器断开重连时 EventSource 会自动重发，
 #: 没有这道闸就会叠出好几个模型调用，把本地模型压死。
 _ORDER_LOCK = threading.Lock()
+
+#: 中堂问话的中转站：sid -> {answer, done, gone}。
+#: SSE 是单向流（只能服务端推），主公的回答必须靠另一条 POST 通道送回。
+_PENDING: dict[str, dict] = {}
+_PENDING_LOCK = threading.Lock()
+
+#: 等主公回答的上限（秒）。超时就按原需求继续拆——问话是增益，不是门槛。
+ANSWER_TIMEOUT = 180.0
 
 
 class Server(ThreadingHTTPServer):
@@ -120,6 +131,46 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", "0")
         self.end_headers()
 
+    def do_POST(self) -> None:  # noqa: N802
+        """主公的回话通道。SSE 只能服务端推客户端，回答得靠这条 POST 送回来。"""
+        path = urlparse(self.path).path
+        if path != "/api/answer":
+            self._send_bytes("not found".encode(), "text/plain; charset=utf-8", 404)
+            return
+
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = 0
+        raw = self.rfile.read(length) if length > 0 else b""
+
+        try:
+            data = json.loads(raw.decode("utf-8") or "{}")
+        except Exception:  # noqa: BLE001
+            self._send_bytes(
+                json.dumps({"ok": False, "error": "请求体不是 JSON"}).encode(),
+                "application/json; charset=utf-8",
+                400,
+            )
+            return
+
+        sid = str(data.get("sid") or "")
+        answer = str(data.get("answer") or "")[:2000]
+        with _PENDING_LOCK:
+            box = _PENDING.get(sid)
+
+        if box is None:
+            self._send_bytes(
+                json.dumps({"ok": False, "error": "没有在等这个问题"}).encode(),
+                "application/json; charset=utf-8",
+                404,
+            )
+            return
+
+        box["answer"] = answer
+        box["done"].set()
+        self._send_bytes(json.dumps({"ok": True}).encode(), "application/json; charset=utf-8")
+
     # ------------------------------------------------------------ 事件流
 
     def _list_models(self) -> dict:
@@ -169,12 +220,41 @@ class Handler(BaseHTTPRequestHandler):
             emit({"type": "order/final", "error": "已有单在拆，请稍候再点"})
             return
 
+        def clarifier(question: str) -> str:
+            """中堂问话：把问题推给前端，然后停下来等主公回答。
+
+            等待期间每秒发一个 SSE 注释心跳——既让连接活着，
+            也能在主公关掉页面时立刻发现（往死连接上写就会炸）。
+            """
+            sid = uuid.uuid4().hex[:8]
+            box = {"answer": "", "done": threading.Event(), "gone": False}
+            with _PENDING_LOCK:
+                _PENDING[sid] = box
+            try:
+                emit({"type": "order/question", "sid": sid, "question": question})
+                deadline = time.monotonic() + ANSWER_TIMEOUT
+                while not box["done"].wait(1.0):
+                    if time.monotonic() >= deadline:
+                        break
+                    try:
+                        self.wfile.write(b": ping\n\n")
+                        self.wfile.flush()
+                    except OSError:
+                        box["gone"] = True
+                        break
+                if box["gone"]:
+                    raise ConnectionError("主公已离场，问话作废")
+                return box["answer"]
+            finally:
+                with _PENDING_LOCK:
+                    _PENDING.pop(sid, None)
+
         try:
             # 每张单可以带自己的模型，互不影响
             cfg = dataclasses.replace(CONFIG, model=model) if model else CONFIG
             with LLM(cfg) as llm:
                 zt = Zhongtang(llm, max_attempts=3, on_event=emit, fast=True)
-                order = zt.issue_order(requirement)
+                order = zt.issue_order(requirement, clarifier=clarifier)
                 emit({"type": "order/final", "order": order.to_dict(), "model": cfg.model})
         except OrderRejected as exc:
             # 终局兜底：如实告诉前端「拆不出来」，由朝堂显示「请示主公」

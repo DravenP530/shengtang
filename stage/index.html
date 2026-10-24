@@ -144,7 +144,10 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
 
 /* ============ 中堂 ============ */
 .zhongtang{position:absolute;left:820px;top:380px;width:160px;height:290px;z-index:42;
-  opacity:0;transform:translateX(430px);transform-origin:bottom center}
+  opacity:0;transform:translateX(430px);transform-origin:bottom center;
+  transition:left .55s cubic-bezier(.22,.9,.3,1),top .55s cubic-bezier(.22,.9,.3,1)}
+/* 卷轴打开时中堂侍立右侧：不挡单子，也不挡六司 */
+.zhongtang.aside{left:1075px;top:240px}
 .zhongtang svg{width:160px;height:290px;display:block;color:#54291b;
   transition:color .6s,filter .6s}
 .zhongtang.stand svg{color:#8b4529;filter:drop-shadow(0 10px 30px rgba(0,0,0,.75))}
@@ -259,7 +262,8 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
 .btn-send:disabled{opacity:.55;cursor:default}
 
 /* ============ 卷轴 ============ */
-.scroll{position:absolute;left:130px;top:124px;width:660px;height:624px;z-index:40;
+/* 卷轴挂在朝堂正中（兵部与刑部之间的空档），不再遮左三部 */
+.scroll{position:absolute;left:520px;top:124px;width:548px;height:624px;z-index:40;
   opacity:0;pointer-events:none;transition:opacity .3s}
 .scroll.open{opacity:1}
 .scroll-inner{position:absolute;left:0;right:0;top:14px;bottom:14px;
@@ -349,8 +353,33 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
   100%{opacity:.9;transform:translate(-50%,-50%) scale(1) rotate(-6deg)}
 }
 
+/* ============ 问话面板（中堂提问，主公作答） ============ */
+.asker{position:absolute;left:520px;top:768px;width:470px;height:116px;z-index:46;
+  background:linear-gradient(180deg,rgba(240,229,204,.98),rgba(219,203,168,.96));
+  border:1px solid rgba(120,80,40,.5);border-radius:2px;
+  box-shadow:0 -10px 34px rgba(0,0,0,.55),0 0 0 5px rgba(88,41,27,.5);
+  display:none;flex-direction:column;padding:9px 14px 8px}
+.asker.on{display:flex}
+.asker-q{font-size:13.5px;color:#6b2118;line-height:1.5;flex:none;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.asker-row{display:flex;gap:10px;margin-top:7px;flex:none}
+.asker-row textarea{flex:1;height:46px;resize:none;
+  border:1px solid rgba(120,80,40,.35);background:rgba(255,250,235,.55);
+  padding:8px 10px;font-family:inherit;font-size:15px;color:var(--ink);outline:none}
+.asker-send{width:76px;height:46px;background:linear-gradient(158deg,#c0392b,#8a1d14);
+  color:#f8ebcd;border:2px solid rgba(244,223,174,.55);border-radius:5px;
+  font-family:"STKaiti","KaiTi",serif;font-size:22px;letter-spacing:.1em;
+  cursor:pointer;transition:transform .13s}
+.asker-send:hover{transform:translateY(-2px)}
+.asker-foot{display:flex;justify-content:flex-end;margin-top:5px;flex:none}
+.asker-skip{background:none;border:none;cursor:pointer;padding:2px 4px;
+  font-family:inherit;font-size:12px;color:rgba(60,38,26,.55);text-decoration:underline}
+.asker-skip:hover{color:#8c1f16}
+
 /* ============ 工具条 ============ */
-.toolbar{position:absolute;right:22px;bottom:18px;z-index:75;display:flex;gap:8px}
+.live-tag{padding:6px 12px;border:1px solid rgba(224,82,63,.55);border-radius:2px;
+  color:#e0523f;font-size:12.5px;letter-spacing:.12em;background:rgba(192,57,43,.12)}
+.toolbar{position:absolute;right:22px;bottom:18px;z-index:75;display:flex;gap:8px;align-items:center}
 .toolbar button{padding:6px 13px;background:rgba(18,9,7,.7);color:rgba(240,229,204,.62);
   border:1px solid rgba(216,178,106,.22);border-radius:2px;cursor:pointer;
   font-family:inherit;font-size:12.5px;letter-spacing:.12em;transition:all .2s}
@@ -423,6 +452,15 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
         <button class="btn-send" id="send"><span>升</span><span>堂</span></button>
       </div>
 
+      <div class="asker" id="asker">
+        <div class="asker-q" id="askerQ"></div>
+        <div class="asker-row">
+          <textarea id="askerIn" placeholder="主公请作答……（Ctrl+Enter 回话）"></textarea>
+          <button class="asker-send" id="askerSend">回话</button>
+        </div>
+        <div class="asker-foot"><button class="asker-skip" id="askerSkip">跳过，直接拆</button></div>
+      </div>
+
       <div class="verdict" id="verdict">
         <button class="v-btn" data-v="ok">定稿</button>
         <button class="v-btn" data-v="back">退回</button>
@@ -432,6 +470,7 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
       <div class="seal" id="seal">结案</div>
 
       <div class="toolbar">
+        <span class="live-tag" id="liveTag" style="display:none">真模型</span>
         <select id="modelSel" title="选择模型" style="display:none"></select>
         <button id="speedBtn">1×</button>
         <button id="resetBtn">再升一单</button>
@@ -654,32 +693,61 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
   var LIVE_TASKS = null;
   var SELECTED_MODEL = '';
 
-  /** 拉可用模型列表，填进选择器。 */
-  function loadModels(){
+  /* ---------- 模型选择器：端点列表 + 自己加的，都存在 localStorage ---------- */
+  var EXTRA_MODELS_KEY = 'shengtang.extraModels';
+  function loadExtraModels(){
+    try{ return JSON.parse(localStorage.getItem(EXTRA_MODELS_KEY) || '[]'); }
+    catch(e){ return []; }
+  }
+  function saveExtraModels(list){
+    try{ localStorage.setItem(EXTRA_MODELS_KEY, JSON.stringify(list)); }catch(e){}
+  }
+
+  /**
+   * 拉可用模型列表，填进选择器。
+   * preferred：重建列表时要选中的模型（加完模型用）。
+   */
+  function loadModels(preferred){
     var sel = document.getElementById('modelSel');
     if(!sel) return;
     if(!LIVE){ sel.style.display = 'none'; return; }
     sel.style.display = '';
 
-    fetch('/api/models').then(function(r){ return r.json(); }).then(function(data){
+    var fill = function(ids, current, errText){
+      loadExtraModels().forEach(function(id){
+        if(ids.indexOf(id) < 0) ids.push(id);
+      });
       sel.innerHTML = '';
-      var ids = data.models || [];
-      if(!ids.length){
-        var o = document.createElement('option');
-        o.textContent = data.error ? '模型列表不可用' : '无可用模型';
-        o.value = '';
-        sel.appendChild(o);
-        return;
+
+      var def = document.createElement('option');
+      def.value = ''; def.textContent = '跟随启动参数';
+      sel.appendChild(def);
+
+      if(errText){
+        var e = document.createElement('option');
+        e.value = ''; e.textContent = errText; e.disabled = true;
+        sel.appendChild(e);
       }
+
       ids.forEach(function(id){
         var o = document.createElement('option');
         o.value = id; o.textContent = id;
-        if(id === data.current) o.selected = true;
+        if(id === (preferred || current)) o.selected = true;
         sel.appendChild(o);
       });
-      SELECTED_MODEL = sel.value;
+
+      var add = document.createElement('option');
+      add.value = '__add__'; add.textContent = '＋ 添加模型…';
+      sel.appendChild(add);
+
+      SELECTED_MODEL = sel.value === '__add__' ? '' : sel.value;
+    };
+
+    fetch('/api/models').then(function(r){ return r.json(); }).then(function(data){
+      var ids = data.models || [];
+      fill(ids, data.current, ids.length ? '' : (data.error ? '模型列表不可用' : '无可用模型'));
     }).catch(function(){
-      sel.innerHTML = '<option value="">模型列表不可用</option>';
+      fill([], '', '模型列表不可用');
     });
   }
 
@@ -774,11 +842,14 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
 
   async function openScroll(html, hold){
     scrollInner.innerHTML = html;
+    /* 中堂侍立到卷轴右侧：不挡单子，也不挡六司 */
+    zhongtang.classList.add('aside');
     scrollEl.classList.add('open');
     await wait(hold || 620);
   }
-  async function closeScroll(){
+  async function closeScroll(home){
     scrollEl.classList.remove('open');
+    if(home){ zhongtang.classList.remove('aside'); }
     await wait(620);
   }
 
@@ -844,15 +915,18 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
 
     say(ztBubble, '禀主公，此单臣已过目。');
     await wait(1350);
-    say(ztBubble, '请示下：要的是「能看的成品」，还是「能跑的流程」？');
-    await wait(1900);
 
     if(LIVE){
       /* ---- 真实模式：拆单走真模型，事件边收边报 ---- */
       say(ztBubble, '主公稍候，臣这就拆单。');
 
       var res = await fetchOrder(text, function(ev){
-        if(ev.type === 'order/attempt'){
+        if(ev.type === 'order/question'){
+          /* 中堂问话：停下来等主公，答完再拆 */
+          say(ztBubble, ev.question);
+          askShow(ev.sid, ev.question);
+        }else if(ev.type === 'order/attempt'){
+          askHide();   /* 拆单一动就收面板，别留个空框在那儿 */
           say(ztBubble, '第 ' + ev.index + ' 轮拆单……');
         }else if(ev.type === 'order/rejected'){
           say(ztBubble, '第 ' + ev.index + ' 轮不合格：' + (ev.problems || []).join('；'));
@@ -863,6 +937,7 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
 
       if(res.error){
         /* 终局兜底：如实请示，绝不拿坏单子往下演 */
+        askHide();
         say(ztBubble, '臣拆不出来——' + res.error + '　请主公示下。');
         setPhase(0);
         composer.classList.remove('fold');
@@ -878,7 +953,7 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
       await openScroll(orderHTML(text, res.order['目标']));
     }else{
       /* ---- 演示模式：用写死的任务表演一遍 ---- */
-      say(ztBubble, '主公未置可否——臣按「既能看、也能跑」拆，本单开五司，刑部只审不做。');
+      say(ztBubble, '臣按「既能看、也能跑」拆，本单开五司，刑部只审不做。');
       await wait(1500);
       setPhase(1);
       await openScroll(orderHTML(text));
@@ -1003,7 +1078,7 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
       seal.classList.add('stamp');
       sfxSeal();
       await wait(1400);
-      await closeScroll();
+      await closeScroll(true);
       await wait(300);
       say(ztBubble, '谢主公。此单结案——执行未接入，本次没有产出文件。');
     }else if(v === 'back'){
@@ -1016,7 +1091,7 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
       setPhase(7);
       say(ztBubble, '整单作废，臣记一句原因归档。');
       await wait(1500);
-      await closeScroll();
+      await closeScroll(true);
     }
   });
 
@@ -1034,20 +1109,75 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
   });
   $('#resetBtn').addEventListener('click', function(){ location.reload(); });
 
+  /* ---------- 中堂问话：作答 / 跳过 ---------- */
+  var asker = $('#asker'), askerQ = $('#askerQ'), askerIn = $('#askerIn');
+  var askSid = null;
+
+  function askShow(sid, question){
+    askSid = sid;
+    askerQ.textContent = '中堂问：' + question;
+    askerQ.title = question;
+    asker.classList.add('on');
+    askerIn.value = '';
+    setTimeout(function(){ askerIn.focus(); }, 60);
+  }
+  function askHide(){
+    asker.classList.remove('on');
+    askSid = null;
+  }
+
+  /** 把回答（空字符串＝跳过）送回后端，后端据此继续拆单。 */
+  function answerOrder(answer){
+    if(!askSid) return;
+    var sid = askSid;
+    fetch('/api/answer', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sid: sid, answer: answer })
+    }).then(function(r){ return r.json(); }).then(function(){
+      askHide();
+      say(ztBubble, answer ? '臣领旨，这就拆。' : '臣按原旨拆。');
+    }).catch(function(){
+      /* 送不到（比如服务还是旧版）也不卡流程：按跳过处理 */
+      askHide();
+      say(ztBubble, '回话没送到——臣先按原旨拆。');
+    });
+  }
+
+  $('#askerSend').addEventListener('click', function(){
+    answerOrder(askerIn.value.trim());
+  });
+  $('#askerSkip').addEventListener('click', function(){ answerOrder(''); });
+  askerIn.addEventListener('keydown', function(e){
+    if(e.key === 'Enter' && (e.ctrlKey || e.metaKey)){
+      e.preventDefault();
+      answerOrder(askerIn.value.trim());
+    }
+  });
+
   var modelSelEl = document.getElementById('modelSel');
   if(modelSelEl){
-    modelSelEl.addEventListener('change', function(){ SELECTED_MODEL = this.value; });
+    modelSelEl.addEventListener('change', function(){
+      if(this.value === '__add__'){
+        var id = window.prompt('输入模型 ID（要和端点上 /models 列出的一致，或你确实知道的 ID）：', '');
+        id = (id || '').trim();
+        if(id){
+          var extras = loadExtraModels();
+          if(extras.indexOf(id) < 0){ extras.push(id); saveExtraModels(extras); }
+          SELECTED_MODEL = id;
+          loadModels(id);                 /* 重建列表并选中新模型 */
+        }else{
+          this.value = SELECTED_MODEL;    /* 取消了，退回原选择 */
+        }
+        return;
+      }
+      SELECTED_MODEL = this.value;
+    });
   }
 
   /* ---------- 真实模式标记 ---------- */
   if(LIVE){
-    var bar = document.querySelector('.toolbar');
-    var tag = document.createElement('span');
-    tag.textContent = '真模型 · 拆单';
-    tag.style.cssText =
-      'padding:6px 12px;border:1px solid rgba(224,82,63,.55);border-radius:2px;' +
-      'color:#e0523f;font-size:12.5px;letter-spacing:.12em;background:rgba(192,57,43,.12)';
-    bar.insertBefore(tag, bar.firstChild);
+    $('#liveTag').style.display = '';
     req.placeholder = '主公请下旨：写下真实需求，点「升堂」由模型拆单……';
     loadModels();
   }
@@ -1068,7 +1198,13 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
     composer.classList.add('fold');
     MEMBERS.forEach(function(m){ m.el.classList.add('lit'); });
     zhongtang.classList.add('pose','stand');
-    if(poseM[1] === 'order'){
+    if(poseM[1] !== 'ask'){ zhongtang.classList.add('aside'); }
+    if(poseM[1] === 'ask'){
+      setPhase(1);
+      var pq = '请示主公：这一单要做到什么程度算完？';
+      say(ztBubble, pq, true);
+      askShow('pose', pq);
+    }else if(poseM[1] === 'order'){
       setPhase(2);
       scrollInner.innerHTML = orderHTML('把「升堂工作流」做成一个能看的朝堂场景：输入需求、点升堂、惊堂木一响，六司齐呼，中堂出来拆单、收附议，刑部独立勘验后汇总。');
       scrollEl.classList.add('open');

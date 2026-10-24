@@ -17,7 +17,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from orchestrator.llm import FastPathUnavailable  # noqa: E402
-from orchestrator.orchestrator import OrderRejected, Zhongtang  # noqa: E402
+from orchestrator.orchestrator import OrderRejected, Zhongtang, parse_question  # noqa: E402
 from orchestrator.schema import ParseError, parse_order, validate  # noqa: E402
 
 
@@ -240,6 +240,84 @@ def test_empty_requirement_rejected():
     except ValueError:
         return
     raise AssertionError("空需求应当直接拒绝，不该浪费一次模型调用")
+
+
+# ---------------------------------------------------------------- 澄清兜底（第 0 层）
+
+def test_parse_question():
+    """只认「一句真问题」。无疑问、跑题、长文、JSON 一律当没问。"""
+    assert parse_question("要做到什么程度算完？") == "要做到什么程度算完？"
+    assert parse_question("  「要不要出图？」  ") == "要不要出图？"
+    assert parse_question("1. 交付物是什么？") == "交付物是什么？"
+    assert parse_question("无疑问") is None
+    assert parse_question("无疑问，需求很清楚。") is None
+    assert parse_question('{"目标":"x","任务":[]}') is None
+    assert parse_question("```json\n{\"目标\":\"x\"}\n```") is None
+    assert parse_question("") is None
+    assert parse_question("问" * 200) is None
+
+
+def test_clarifier_answer_feeds_order_prompt():
+    """问了就要用上：回答必须回灌进拆单提示词，否则等于白问。"""
+    llm = ScriptedLLM(["验收标准是什么？", GOOD])
+    seen: dict[str, str] = {}
+    events: list[dict] = []
+
+    def clarifier(q: str) -> str:
+        seen["q"] = q
+        return "能跑通就算完"
+
+    zt = Zhongtang(llm, max_attempts=1, on_event=events.append)
+    order = zt.issue_order("做个朝堂页面", clarifier=clarifier)
+
+    assert seen["q"] == "验收标准是什么？", seen
+    assert llm.calls == 2, f"澄清 1 次 + 拆单 1 次，实际 {llm.calls}"
+    assert "能跑通就算完" in llm.prompts[1], "主公的回答没有进拆单提示词"
+    assert order.goal == "做朝堂场景"
+    assert any(e["type"] == "order/clarified" for e in events)
+
+
+def test_no_question_skips_clarifier():
+    """模型说「无疑问」→ 不该去打扰主公。"""
+    llm = ScriptedLLM(["无疑问", GOOD])
+    asked: list[str] = []
+    zt = Zhongtang(llm, max_attempts=1)
+
+    zt.issue_order("做个朝堂页面", clarifier=lambda q: asked.append(q) or "")
+
+    assert asked == [], f"不该问却问了：{asked}"
+    assert llm.calls == 2
+
+
+def test_clarify_failure_does_not_block():
+    """澄清那一步炸了（模型/网络）→ 按原需求继续拆，不能把流程卡死。"""
+
+    class ClarifyBoom:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def quick(self, prompt: str) -> str:
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("澄清这一步炸了")
+            return GOOD
+
+        def chat(self, prompt: str) -> str:  # pragma: no cover - 不该走到
+            raise AssertionError("快路可用时不应回退到 chat")
+
+    llm = ClarifyBoom()
+    order = Zhongtang(llm, max_attempts=1).issue_order("做个朝堂页面", clarifier=lambda q: "不影响")
+
+    assert order.goal == "做朝堂场景"
+    assert llm.calls == 2
+
+
+def test_empty_answer_keeps_requirement():
+    """主公跳过（空回答）→ 需求原样送进拆单，不拼一个空的「主公补充」。"""
+    llm = ScriptedLLM(["要几个司？", GOOD])
+    Zhongtang(llm, max_attempts=1).issue_order("做个朝堂页面", clarifier=lambda q: "   ")
+
+    assert "主公补充" not in llm.prompts[1]
 
 
 # ---------------------------------------------------------------- 跑起来
