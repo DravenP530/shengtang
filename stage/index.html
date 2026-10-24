@@ -1,0 +1,1013 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>升堂 · 六部制朝堂协作 v0.2</title>
+<style>
+:root{
+  --gold:#d8b26a;
+  --gold-b:#f4dfae;
+  --cinnabar:#c0392b;
+  --cinnabar-b:#e0523f;
+  --paper:#f0e5cc;
+  --paper-2:#e2d3b0;
+  --ink:#2a1a12;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden;background:#050403}
+body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-font-smoothing:antialiased}
+.viewport{position:fixed;inset:0;display:grid;place-items:center;background:radial-gradient(circle at 50% 38%,#130b08 0%,#050403 72%)}
+.stage-wrap{width:1600px;height:900px;transform-origin:center center}
+.stage{position:absolute;inset:0;width:1600px;height:900px;overflow:hidden;background:#0a0605;transform-origin:center center}
+
+/* ============ 天幕 / 浮尘 ============ */
+.sky{position:absolute;inset:0;z-index:1;background:
+  radial-gradient(ellipse 70% 48% at 50% 10%,rgba(196,126,62,.16),transparent 70%),
+  radial-gradient(ellipse 90% 55% at 50% 102%,rgba(128,44,26,.20),transparent 70%),
+  linear-gradient(180deg,#170d09 0%,#0d0706 46%,#080505 100%)}
+.dust{position:absolute;inset:0;z-index:2;pointer-events:none;
+  background-image:radial-gradient(circle,rgba(240,215,160,.55) 0 1px,transparent 1.4px);
+  opacity:.30}
+.dust.d1{background-size:150px 150px;animation:drift1 34s linear infinite}
+.dust.d2{background-size:230px 230px;opacity:.16;animation:drift2 52s linear infinite}
+@keyframes drift1{from{background-position:0 0}to{background-position:150px 300px}}
+@keyframes drift2{from{background-position:0 0}to{background-position:-230px 460px}}
+
+/* ============ 地面 ============ */
+.floor{position:absolute;left:0;right:0;top:480px;bottom:0;z-index:3;
+  background:linear-gradient(180deg,#22110c,#140907 58%,#0b0505)}
+.floor:before{content:"";position:absolute;inset:0;
+  background:repeating-linear-gradient(to bottom,rgba(216,178,106,.075) 0 1px,transparent 1px 52px);
+  -webkit-mask-image:linear-gradient(to bottom,transparent,#000 26%,#000 72%,transparent);
+  mask-image:linear-gradient(to bottom,transparent,#000 26%,#000 72%,transparent)}
+.floor:after{content:"";position:absolute;left:50%;top:0;width:1100px;height:100%;transform:translateX(-50%);
+  background:radial-gradient(ellipse at 50% 0%,rgba(232,182,112,.20),transparent 62%)}
+
+/* 堂前光斑（把视线压到案几） */
+.spot{position:absolute;left:50%;top:560px;width:1080px;height:420px;z-index:7;
+  transform:translateX(-50%);pointer-events:none;
+  background:radial-gradient(ellipse at 50% 62%,rgba(255,196,120,.13),rgba(255,170,90,.05) 42%,transparent 72%)}
+.vignette{position:absolute;inset:0;z-index:8;pointer-events:none;
+  background:radial-gradient(ellipse 78% 74% at 50% 46%,transparent 42%,rgba(0,0,0,.62) 100%)}
+
+/* 堂前甬道 */
+.carpet{position:absolute;left:440px;top:636px;width:720px;height:264px;z-index:9;
+  pointer-events:none;
+  background:linear-gradient(180deg,rgba(126,32,23,.34),rgba(84,20,14,.10));
+  clip-path:polygon(24% 0,76% 0,100% 100%,0 100%);
+  border-left:1px solid rgba(216,178,106,.10);border-right:1px solid rgba(216,178,106,.10)}
+
+/* ============ 屏风 ============ */
+.screen{position:absolute;left:500px;top:128px;width:600px;height:384px;z-index:4;
+  background:linear-gradient(158deg,#241010,#301612 46%,#1a0a09);
+  border:2px solid rgba(216,178,106,.30);
+  box-shadow:inset 0 0 80px rgba(0,0,0,.85),0 22px 60px rgba(0,0,0,.7)}
+.screen:before{content:"";position:absolute;inset:12px;border:1px solid rgba(216,178,106,.14)}
+.screen-char{position:absolute;left:50%;top:50%;transform:translate(-50%,-52%);
+  font-family:"STKaiti","KaiTi","Kaiti SC",serif;font-size:186px;line-height:1;
+  color:rgba(216,178,106,.085);user-select:none}
+
+/* ============ 横梁 / 立柱 ============ */
+.beam{position:absolute;left:0;right:0;top:0;height:86px;z-index:6;
+  background:linear-gradient(180deg,#4d2318,#2a110c);
+  border-bottom:2px solid rgba(216,178,106,.5);
+  box-shadow:0 12px 34px rgba(0,0,0,.65)}
+.beam:after{content:"";position:absolute;left:0;right:0;bottom:7px;height:1px;
+  background:linear-gradient(90deg,transparent,rgba(216,178,106,.75),transparent)}
+.pillar{position:absolute;top:86px;bottom:0;width:78px;z-index:6;
+  background:linear-gradient(90deg,#33150e,#5a2a1b 42%,#280f08);
+  border-left:1px solid rgba(216,178,106,.14);
+  border-right:1px solid rgba(0,0,0,.65)}
+.pillar.l{left:36px}
+.pillar.r{right:36px}
+.pillar:before{content:"";position:absolute;left:-12px;right:-12px;top:-14px;height:22px;
+  background:linear-gradient(180deg,#6f3d26,#38190f);
+  border:1px solid rgba(216,178,106,.32)}
+
+/* ============ 队员 ============ */
+.courtiers{position:absolute;inset:0;z-index:10}
+.courtier{position:absolute;width:96px;height:140px;transform-origin:bottom center;
+  transition:filter .5s}
+.courtier svg{width:96px;height:126px;display:block;color:#4a2a1d;
+  transition:color .55s,filter .55s;
+  filter:drop-shadow(0 0 1px rgba(216,178,106,.30))}
+.courtier.lit svg{color:#8a4a2e;filter:drop-shadow(0 0 16px rgba(224,82,63,.5))}
+.lantern{position:absolute;left:50%;top:-46px;width:16px;height:21px;transform:translateX(-50%);
+  border-radius:50% 50% 44% 44%;
+  background:radial-gradient(circle at 50% 34%,#6e2015,#2e0b06);
+  border:1px solid rgba(216,178,106,.26);
+  box-shadow:0 0 0 rgba(224,82,63,0);
+  transition:background .45s,box-shadow .6s}
+.lantern:before{content:"";position:absolute;left:50%;top:-14px;width:1px;height:14px;
+  transform:translateX(-50%);background:rgba(216,178,106,.26)}
+.courtier.lit .lantern{background:radial-gradient(circle at 50% 34%,#ffe3b4,#e0523f 58%,#8a2b1e);
+  box-shadow:0 0 28px 9px rgba(224,82,63,.55),0 0 70px 26px rgba(224,82,63,.18)}
+/* 勘验时其他司压暗：只留刑部在场 */
+.courtier.dim{opacity:.30}
+.courtier.dim svg{color:#33201a;filter:none}
+.courtier.dim .lantern{background:radial-gradient(circle at 50% 34%,#42160e,#1b0604);
+  box-shadow:0 0 0 rgba(0,0,0,0)}
+
+/* ============ 气泡 ============ */
+.bubble{position:absolute;padding:5px 13px;background:rgba(240,229,204,.95);color:#2a1a12;
+  font-size:14px;letter-spacing:.10em;border-radius:2px;white-space:nowrap;
+  opacity:0;transform:translate(-50%,10px) scale(.9);pointer-events:none;
+  box-shadow:0 8px 22px rgba(0,0,0,.5);z-index:12}
+.bubble:after{content:"";position:absolute;left:50%;bottom:-4px;width:9px;height:9px;
+  transform:translateX(-50%) rotate(45deg);background:inherit}
+.bubble.show{animation:bubbleIn .38s cubic-bezier(.2,.9,.3,1.35) forwards}
+.bubble.hide{animation:bubbleOut .3s forwards}
+.bubble.dissent{background:rgba(192,57,43,.96);color:#fbe9c8;box-shadow:0 8px 26px rgba(192,57,43,.55)}
+@keyframes bubbleIn{to{opacity:1;transform:translate(-50%,0) scale(1)}}
+@keyframes bubbleOut{to{opacity:0;transform:translate(-50%,-12px) scale(.94)}}
+.courtier .bubble{left:50%;bottom:calc(100% + 6px)}
+
+/* ============ 中堂 ============ */
+.zhongtang{position:absolute;left:820px;top:380px;width:160px;height:290px;z-index:42;
+  opacity:0;transform:translateX(430px);transform-origin:bottom center}
+.zhongtang svg{width:160px;height:290px;display:block;color:#54291b;
+  transition:color .6s,filter .6s}
+.zhongtang.stand svg{color:#8b4529;filter:drop-shadow(0 10px 30px rgba(0,0,0,.75))}
+.zhongtang.enter{animation:walkIn 1.15s cubic-bezier(.22,.75,.3,1) forwards,fadeUp .45s ease-out forwards}
+.zhongtang.pose{opacity:1;transform:none;animation:none}
+@keyframes walkIn{
+  0%{transform:translateX(430px) translateY(0)}
+  18%{transform:translateX(344px) translateY(-7px)}
+  36%{transform:translateX(258px) translateY(0)}
+  54%{transform:translateX(172px) translateY(-7px)}
+  72%{transform:translateX(86px) translateY(0)}
+  100%{transform:translateX(0) translateY(0)}
+}
+@keyframes fadeUp{from{opacity:0}to{opacity:1}}
+.bubble.zt{left:50%;bottom:calc(100% + 8px);width:520px;white-space:normal;
+  background:rgba(26,12,9,.96);color:var(--gold-b);border:1px solid rgba(216,178,106,.42);
+  font-size:16px;line-height:1.65;letter-spacing:.06em;text-align:left;padding:11px 16px}
+.bubble.zt:after{background:rgba(26,12,9,.96);border-right:1px solid rgba(216,178,106,.42);border-bottom:1px solid rgba(216,178,106,.42)}
+.bubble.zt.hide:after{display:none}
+
+/* ============ 案几 ============ */
+.desk{position:absolute;left:470px;top:750px;width:660px;height:150px;z-index:30;
+  background:linear-gradient(180deg,#552818 0%,#38170a 56%,#1e0b06 100%);
+  border-top:3px solid rgba(216,178,106,.5);
+  clip-path:polygon(3% 0,97% 0,100% 100%,0 100%);
+  box-shadow:0 -18px 50px rgba(0,0,0,.7)}
+.desk:before{content:"";position:absolute;left:0;right:0;top:26px;height:1px;
+  background:linear-gradient(90deg,transparent,rgba(216,178,106,.32),transparent)}
+
+/* 惊堂木 */
+.gavel{position:absolute;right:42px;top:32px;width:80px;height:28px;
+  transform-origin:18% 88%;transform:rotate(-5deg);cursor:pointer;z-index:2}
+.gavel-head{position:relative;width:80px;height:28px;border-radius:3px;
+  background:linear-gradient(180deg,#8b4f2e,#41190c 62%,#240c06);
+  border:1px solid rgba(216,178,106,.55);
+  box-shadow:0 8px 16px rgba(0,0,0,.7),inset 0 1px 0 rgba(244,223,174,.32)}
+.gavel-head:after{content:"";position:absolute;left:9px;right:9px;top:12px;height:2px;
+  background:rgba(216,178,106,.42)}
+.gavel.raise{animation:gavelUp .17s cubic-bezier(.3,0,.6,1) forwards}
+.gavel.slam{animation:gavelDown .13s cubic-bezier(.55,0,.9,1) forwards}
+@keyframes gavelUp{to{transform:translateY(-44px) rotate(-17deg)}}
+@keyframes gavelDown{to{transform:translateY(0) rotate(-1deg)}}
+
+/* ============ 冲击波 / 震屏 ============ */
+.fx{position:absolute;inset:0;z-index:35;pointer-events:none}
+.ring{position:absolute;left:1058px;top:812px;width:60px;height:60px;margin:-30px 0 0 -30px;
+  border-radius:50%;border:2px solid rgba(244,223,174,.9);opacity:0}
+.fx.go .ring{animation:ringOut .72s cubic-bezier(.1,.7,.3,1) forwards}
+.fx.go .ring:nth-child(2){animation-delay:.10s;border-color:rgba(224,82,63,.85)}
+.fx.go .ring:nth-child(3){animation-delay:.22s;border-color:rgba(244,223,174,.5)}
+@keyframes ringOut{
+  0%{transform:scale(.2);opacity:.95}
+  100%{transform:scale(24);opacity:0}
+}
+.stage.shake{animation:shakeIt .52s cubic-bezier(.36,.07,.19,.97)}
+@keyframes shakeIt{
+  0%{transform:translate(0,0) rotate(0)}
+  8%{transform:translate(-11px,7px) rotate(-.42deg)}
+  17%{transform:translate(9px,-6px) rotate(.36deg)}
+  26%{transform:translate(-8px,5px) rotate(-.3deg)}
+  36%{transform:translate(6px,-4px) rotate(.22deg)}
+  48%{transform:translate(-4px,3px) rotate(-.15deg)}
+  62%{transform:translate(3px,-2px) rotate(.08deg)}
+  78%{transform:translate(-1px,1px) rotate(-.03deg)}
+  100%{transform:translate(0,0) rotate(0)}
+}
+
+/* ============ 状态机 HUD ============ */
+.hud{position:absolute;left:50%;top:16px;transform:translateX(-50%);z-index:70;
+  display:flex;align-items:center;padding:8px 16px;
+  background:rgba(10,6,5,.55);border:1px solid rgba(216,178,106,.22);
+  border-radius:2px;backdrop-filter:blur(7px)}
+.hud .step{font-size:13.5px;letter-spacing:.14em;padding:3px 10px;color:rgba(240,229,204,.30);
+  transition:color .45s,text-shadow .45s,background .45s;white-space:nowrap;border-radius:2px}
+.hud .step.active{color:#120806;background:linear-gradient(180deg,#f4dfae,#d8b26a);
+  text-shadow:none;font-weight:600;box-shadow:0 0 18px rgba(244,223,174,.45)}
+.hud .step.done{color:rgba(224,82,63,.95)}
+.hud .step.done:before{content:"✓ ";font-size:11px}
+.hud .sep{width:13px;height:1px;background:rgba(216,178,106,.22)}
+
+/* ============ 输入区（奏折） ============ */
+.composer{position:absolute;left:520px;top:766px;width:470px;height:118px;z-index:45;
+  background:linear-gradient(180deg,rgba(240,229,204,.98),rgba(219,203,168,.96));
+  border:1px solid rgba(120,80,40,.5);border-radius:2px;
+  box-shadow:0 -10px 34px rgba(0,0,0,.55),0 0 0 5px rgba(88,41,27,.5);
+  transition:transform .5s cubic-bezier(.4,0,.2,1),opacity .42s}
+.composer:before{content:"";position:absolute;left:-5px;right:-5px;top:-9px;height:9px;
+  background:linear-gradient(180deg,#7a4429,#3b1a10);border-radius:3px 3px 0 0;
+  box-shadow:0 2px 6px rgba(0,0,0,.5)}
+.composer.fold{transform:translateY(130px) scale(.88);opacity:0;pointer-events:none}
+.composer.err{animation:composerErr .42s}
+@keyframes composerErr{
+  0%,100%{transform:translateX(0)}
+  20%{transform:translateX(-9px)}40%{transform:translateX(8px)}
+  60%{transform:translateX(-5px)}80%{transform:translateX(3px)}
+}
+.composer textarea{width:100%;height:100%;padding:15px 100px 14px 18px;border:none;outline:none;
+  resize:none;background:transparent;color:var(--ink);font-family:inherit;
+  font-size:16px;line-height:1.72;letter-spacing:.02em}
+.composer textarea::placeholder{color:rgba(60,38,26,.42)}
+.btn-send{position:absolute;right:16px;bottom:14px;width:76px;height:76px;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:linear-gradient(158deg,#c0392b,#8a1d14);
+  color:#f8ebcd;border:2px solid rgba(244,223,174,.55);border-radius:5px;
+  font-family:"STKaiti","KaiTi","Kaiti SC",serif;font-size:27px;line-height:1.05;
+  letter-spacing:.04em;cursor:pointer;transform:rotate(-2deg);
+  box-shadow:0 7px 20px rgba(150,40,25,.55),inset 0 0 0 1px rgba(0,0,0,.28);
+  transition:transform .13s,box-shadow .22s}
+.btn-send:hover{transform:rotate(-2deg) translateY(-2px);
+  box-shadow:0 11px 26px rgba(200,60,35,.62),inset 0 0 0 1px rgba(0,0,0,.28)}
+.btn-send:active{transform:rotate(-2deg) translateY(1px) scale(.96)}
+.btn-send:disabled{opacity:.55;cursor:default}
+
+/* ============ 卷轴 ============ */
+.scroll{position:absolute;left:130px;top:124px;width:660px;height:624px;z-index:40;
+  opacity:0;pointer-events:none;transition:opacity .3s}
+.scroll.open{opacity:1}
+.scroll-inner{position:absolute;left:0;right:0;top:14px;bottom:14px;
+  display:flex;flex-direction:column;
+  background:linear-gradient(180deg,#f4ead3,#e2d3b0 62%,#d5c39c);
+  color:var(--ink);padding:26px 30px 20px;overflow:auto;
+  border-left:1px solid rgba(120,80,40,.35);border-right:1px solid rgba(120,80,40,.35);
+  box-shadow:0 34px 90px rgba(0,0,0,.8),inset 0 0 60px rgba(150,110,60,.16);
+  clip-path:inset(0 0 100% 0);transition:clip-path .58s cubic-bezier(.3,.8,.3,1)}
+.scroll.open .scroll-inner{clip-path:inset(0 0 0 0)}
+.scroll-inner::-webkit-scrollbar{width:0}
+.rod{position:absolute;left:-14px;right:-14px;height:16px;z-index:2;
+  background:linear-gradient(180deg,#7d4a2c,#3c1a0e 60%,#24100a);
+  border:1px solid rgba(216,178,106,.35);border-radius:8px;
+  box-shadow:0 6px 18px rgba(0,0,0,.65)}
+.rod.top{top:0}
+.rod.bottom{bottom:0}
+.sc-head{display:flex;align-items:baseline;justify-content:space-between;
+  border-bottom:2px solid rgba(140,31,22,.55);padding-bottom:9px;flex:none}
+.sc-title{font-family:"STKaiti","KaiTi",serif;font-size:27px;letter-spacing:.32em;
+  color:#8c1f16}
+.sc-no{font-size:12.5px;letter-spacing:.16em;color:rgba(60,38,26,.62)}
+.sc-meta{margin:10px 0 8px;font-size:15px;line-height:1.78;color:#3a2418;flex:none}
+.sc-meta p{display:grid;grid-template-columns:52px 1fr;align-items:start}
+.sc-meta b{color:#8c1f16;font-weight:600;letter-spacing:.1em}
+.sc-meta b:after{content:"："}
+.sc-tasks{margin-top:2px;flex:none}
+.t-row{display:grid;grid-template-columns:24px 52px 1fr 138px 22px;gap:9px;
+  align-items:center;padding:7px 0;font-size:15px;
+  border-bottom:1px dashed rgba(120,80,40,.28);
+  opacity:0;transform:translateX(-10px);transition:background .35s}
+.t-row.in{animation:rowIn .42s cubic-bezier(.2,.8,.3,1) forwards}
+@keyframes rowIn{to{opacity:1;transform:translateX(0)}}
+.t-row .no{display:flex;align-items:center;justify-content:center;
+  width:22px;height:22px;background:#8c1f16;color:#f6e7c8;font-size:12.5px;
+  border-radius:2px}
+.t-row .owner{color:#8c1f16;letter-spacing:.1em}
+.t-row .act{color:#33200f}
+.t-row .out{color:rgba(60,38,26,.72);font-size:13px;text-align:right}
+.t-row .mark{text-align:center;color:#8c1f16;font-size:15px;opacity:0;transition:opacity .3s}
+.t-row.running{background:rgba(192,57,43,.10)}
+.t-row.running .mark{opacity:.5}
+.t-row.done .mark{opacity:1}
+.t-row.changed{background:rgba(192,57,43,.16)}
+.t-row.changed .act{text-decoration:line-through;opacity:.5}
+.t-row.reject{background:rgba(192,57,43,.24);outline:1px solid rgba(140,31,22,.5)}
+.t-row.reject .mark{color:#8c1f16;opacity:1}
+.sc-note{margin-top:9px;padding:7px 11px;background:rgba(192,57,43,.10);
+  border-left:3px solid #8c1f16;font-size:13.5px;color:#6b2118;line-height:1.7;
+  opacity:0;transition:opacity .35s;flex:none}
+.sc-note.show{opacity:1}
+.sc-foot{margin-top:auto;padding-top:11px;font-size:13px;
+  color:rgba(60,38,26,.6);letter-spacing:.06em;border-top:1px solid rgba(120,80,40,.22)}
+.sc-foot.static{margin-top:16px}
+.sc-deliver{margin-top:2px;flex:none}
+.sc-deliver .d-title{font-size:13px;color:#8c1f16;letter-spacing:.2em;margin-bottom:4px}
+.d-row{display:grid;grid-template-columns:22px 24px 54px 1fr;gap:8px;align-items:center;
+  padding:7px 0;border-bottom:1px dashed rgba(120,80,40,.22);font-size:14.5px}
+.d-row .d-ck{color:#2e6b45;font-weight:700}
+.d-row .d-no{color:rgba(60,38,26,.5);font-size:12.5px}
+.d-row .d-own{color:#8c1f16;letter-spacing:.1em}
+.d-row .d-out{color:rgba(60,38,26,.8)}
+
+/* ============ 验收 ============ */
+.verdict{position:absolute;left:50%;bottom:118px;transform:translateX(-50%) translateY(10px);
+  display:flex;gap:16px;z-index:50;opacity:0;pointer-events:none;
+  transition:opacity .4s,transform .4s}
+.verdict.show{opacity:1;pointer-events:auto;transform:translateX(-50%) translateY(0)}
+.v-btn{padding:11px 30px;background:rgba(18,9,7,.92);color:var(--gold-b);
+  border:1px solid rgba(216,178,106,.5);cursor:pointer;
+  font-family:inherit;font-size:16px;letter-spacing:.26em;border-radius:2px;
+  transition:background .2s,border-color .2s,transform .15s}
+.v-btn:hover{background:rgba(192,57,43,.85);border-color:var(--gold-b);
+  transform:translateY(-2px)}
+
+/* ============ 结案印章 ============ */
+.seal{position:absolute;left:50%;top:46%;z-index:60;width:230px;height:230px;
+  display:flex;align-items:center;justify-content:center;
+  border:9px solid #c0392b;border-radius:9px;color:#c0392b;
+  font-family:"STKaiti","KaiTi",serif;font-size:86px;letter-spacing:.06em;
+  opacity:0;transform:translate(-50%,-50%) scale(2.4) rotate(-12deg);
+  text-shadow:0 0 24px rgba(192,57,43,.5);pointer-events:none}
+.seal.stamp{animation:stampIt .46s cubic-bezier(.5,0,.8,1) forwards}
+@keyframes stampIt{
+  0%{opacity:0;transform:translate(-50%,-50%) scale(2.4) rotate(-12deg)}
+  62%{opacity:1;transform:translate(-50%,-50%) scale(.93) rotate(-6deg)}
+  100%{opacity:.9;transform:translate(-50%,-50%) scale(1) rotate(-6deg)}
+}
+
+/* ============ 工具条 ============ */
+.toolbar{position:absolute;right:22px;bottom:18px;z-index:75;display:flex;gap:8px}
+.toolbar button{padding:6px 13px;background:rgba(18,9,7,.7);color:rgba(240,229,204,.62);
+  border:1px solid rgba(216,178,106,.22);border-radius:2px;cursor:pointer;
+  font-family:inherit;font-size:12.5px;letter-spacing:.12em;transition:all .2s}
+.toolbar button:hover{color:var(--gold-b);border-color:rgba(216,178,106,.6)}
+
+/* 定妆模式：跳过过渡，直接看最终版式 */
+.pose-mode *{transition:none!important}
+.pose-mode .t-row{opacity:1;transform:none}
+</style>
+</head>
+<body>
+<div class="viewport">
+  <div class="stage-wrap" id="wrap">
+    <div class="stage" id="stage">
+
+      <div class="sky"></div>
+      <div class="dust d1"></div>
+      <div class="dust d2"></div>
+      <div class="floor"></div>
+      <div class="spot"></div>
+      <div class="carpet"></div>
+      <div class="screen"><span class="screen-char">堂</span></div>
+      <div class="beam"></div>
+      <div class="pillar l"></div>
+      <div class="pillar r"></div>
+
+      <div class="courtiers" id="courtiers"></div>
+
+      <div class="zhongtang" id="zhongtang">
+        <div class="bubble zt" id="ztBubble"></div>
+        <svg viewBox="0 0 160 290" fill="currentColor" aria-hidden="true">
+          <rect x="24" y="12" width="112" height="6" rx="3"/>
+          <path d="M58 1h44v11H58z"/>
+          <rect x="48" y="11" width="64" height="5" rx="2.5"/>
+          <ellipse cx="80" cy="30" rx="12" ry="13"/>
+          <rect x="72" y="42" width="16" height="9"/>
+          <path d="M80 48c-23 0-37 9-42 26l-3 32c-1 7 3 11 10 11h70c7 0 11-4 10-11l-3-32c-5-17-19-26-42-26z"/>
+          <rect x="46" y="104" width="68" height="8" rx="2"/>
+          <path d="M80 111c-21 0-34 11-37 32l-8 147h90l-8-147c-3-21-16-32-37-32z"/>
+          <path d="M80 130v160" stroke="currentColor" stroke-width="2" opacity=".22"/>
+          <rect x="114" y="96" width="9" height="74" rx="2" opacity=".75" transform="rotate(8 118 133)"/>
+        </svg>
+      </div>
+
+      <div class="desk">
+        <div class="gavel" id="gavel"><div class="gavel-head"></div></div>
+      </div>
+
+      <div class="fx" id="fx">
+        <div class="ring"></div><div class="ring"></div><div class="ring"></div>
+      </div>
+
+      <div class="vignette"></div>
+
+      <div class="hud" id="hud"></div>
+
+      <div class="scroll" id="scroll">
+        <div class="rod top"></div>
+        <div class="scroll-inner" id="scrollInner"></div>
+        <div class="rod bottom"></div>
+      </div>
+
+      <div class="composer" id="composer">
+        <textarea id="req" placeholder="主公请下旨：要做什么、做到什么算完、有没有不能动的东西……"></textarea>
+        <button class="btn-send" id="send"><span>升</span><span>堂</span></button>
+      </div>
+
+      <div class="verdict" id="verdict">
+        <button class="v-btn" data-v="ok">定稿</button>
+        <button class="v-btn" data-v="back">退回</button>
+        <button class="v-btn" data-v="no">否决</button>
+      </div>
+
+      <div class="seal" id="seal">结案</div>
+
+      <div class="toolbar">
+        <button id="speedBtn">1×</button>
+        <button id="resetBtn">再升一单</button>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  var $ = function(s){ return document.querySelector(s); };
+  var stage = $('#stage'), wrap = $('#wrap');
+  var courtiers = $('#courtiers'), zhongtang = $('#zhongtang');
+  var ztBubble = $('#ztBubble');
+  var gavel = $('#gavel'), fx = $('#fx'), hud = $('#hud');
+  var composer = $('#composer'), req = $('#req'), send = $('#send');
+  var scrollEl = $('#scroll'), scrollInner = $('#scrollInner');
+  var verdict = $('#verdict'), seal = $('#seal');
+  var speed = 1;
+
+  /* ---------- 自适应缩放 ---------- */
+  function fit(){
+    var s = Math.min(window.innerWidth / 1600, window.innerHeight / 900);
+    wrap.style.transform = 'scale(' + s + ')';
+  }
+  window.addEventListener('resize', fit);
+  fit();
+
+  /* ---------- 状态机 ---------- */
+  var PHASES = ['待升堂','拆单中','附议中','执行中','勘验中','汇总中','待验收','结案'];
+  var phaseIdx = 0;
+  function buildHud(){
+    hud.innerHTML = '';
+    PHASES.forEach(function(p, i){
+      if(i){ var sep = document.createElement('span'); sep.className = 'sep'; hud.appendChild(sep); }
+      var s = document.createElement('span');
+      s.className = 'step'; s.textContent = p; s.dataset.i = i;
+      hud.appendChild(s);
+    });
+  }
+  function setPhase(i){
+    phaseIdx = i;
+    Array.prototype.forEach.call(hud.children, function(el){
+      if(!el.dataset.i) return;
+      var n = +el.dataset.i;
+      el.classList.toggle('active', n === i);
+      el.classList.toggle('done', n < i);
+    });
+  }
+  buildHud();
+  setPhase(0);
+
+  /* ---------- 队员 ---------- */
+  var MEMBERS = [
+    { name:'吏部', x:130,  y:460, s:0.86 },
+    { name:'户部', x:270,  y:520, s:0.96 },
+    { name:'兵部', x:410,  y:580, s:1.06 },
+    { name:'礼部', x:1374, y:460, s:0.86 },
+    { name:'工部', x:1234, y:520, s:0.96 },
+    { name:'刑部', x:1094, y:580, s:1.06 }
+  ];
+  var SILHOUETTE =
+    '<svg viewBox="0 0 96 126" fill="currentColor" aria-hidden="true">' +
+      '<path d="M36 6h24v9H36z"/>' +
+      '<rect x="20" y="14" width="56" height="5" rx="2.5"/>' +
+      '<rect x="32" y="19" width="32" height="4" rx="2"/>' +
+      '<ellipse cx="48" cy="30" rx="9.5" ry="10.5"/>' +
+      '<path d="M48 40c-14 0-23 7-26 19l-2 9c-1 6 2 9 7 9h42c5 0 8-3 7-9l-2-9c-3-12-12-19-26-19z"/>' +
+      '<path d="M48 77c-16 0-26 9-29 24l-3 25h64l-3-25c-3-15-13-24-29-24z"/>' +
+      '<rect x="32" y="70" width="32" height="4" rx="2" opacity=".55"/>' +
+    '</svg>';
+
+  MEMBERS.forEach(function(m){
+    var d = document.createElement('div');
+    d.className = 'courtier';
+    d.style.left = m.x + 'px';
+    d.style.top = m.y + 'px';
+    d.style.transform = 'scale(' + m.s + ')';
+    d.innerHTML = '<div class="lantern"></div>' + SILHOUETTE +
+                  '<div class="bubble" data-role="bubble"></div>';
+    courtiers.appendChild(d);
+    m.el = d;
+    m.bubble = d.querySelector('[data-role="bubble"]');
+  });
+
+  function byName(n){
+    for(var i=0;i<MEMBERS.length;i++){ if(MEMBERS[i].name === n) return MEMBERS[i]; }
+    return null;
+  }
+
+  /* ---------- 工具 ---------- */
+  function wait(ms){ return new Promise(function(r){ setTimeout(r, ms / speed); }); }
+
+  var typeTimer = null;
+  function say(el, txt, keep){
+    clearInterval(typeTimer);
+    el.classList.remove('hide');
+    el.classList.add('show');
+    el.textContent = '';
+    var i = 0, step = Math.max(1, Math.round(txt.length / 34));
+    typeTimer = setInterval(function(){
+      i += step;
+      el.textContent = txt.slice(0, i);
+      if(i >= txt.length){ clearInterval(typeTimer); el.textContent = txt; }
+    }, 32 / speed);
+    if(!keep){ /* 由调用方控制隐藏 */ }
+  }
+  function hideBubble(el){
+    el.classList.remove('show');
+    el.classList.add('hide');
+  }
+  function shout(m, text, dissent){
+    m.bubble.textContent = text;
+    m.bubble.classList.toggle('dissent', !!dissent);
+    m.bubble.classList.remove('show','hide');
+    void m.bubble.offsetWidth;
+    m.bubble.classList.add('show');
+    setTimeout(function(){ hideBubble(m.bubble); }, 1500 / speed);
+  }
+
+  /* ---------- 音效（纯合成，无外部素材） ---------- */
+  var AC = null;
+  function ac(){
+    if(!AC){
+      var C = window.AudioContext || window.webkitAudioContext;
+      if(!C) return null;
+      AC = new C();
+    }
+    if(AC.state === 'suspended') AC.resume();
+    return AC;
+  }
+  function sfxSlam(){
+    var c = null;
+    try{ c = ac(); }catch(e){ return; }
+    if(!c) return;
+    var t = c.currentTime;
+    var len = Math.floor(c.sampleRate * 0.13);
+    var buf = c.createBuffer(1, len, c.sampleRate);
+    var d = buf.getChannelData(0);
+    for(var i=0;i<len;i++){ var p = i/len; d[i] = (Math.random()*2-1) * Math.pow(1-p, 5); }
+    var src = c.createBufferSource(); src.buffer = buf;
+    var bp = c.createBiquadFilter(); bp.type = 'bandpass';
+    bp.frequency.value = 950; bp.Q.value = 1.15;
+    var g = c.createGain(); g.gain.value = 0.5;
+    src.connect(bp); bp.connect(g); g.connect(c.destination);
+    src.start(t);
+
+    var o = c.createOscillator(); o.type = 'sine';
+    o.frequency.setValueAtTime(145, t);
+    o.frequency.exponentialRampToValueAtTime(42, t + 0.14);
+    var g2 = c.createGain();
+    g2.gain.setValueAtTime(0.62, t);
+    g2.gain.exponentialRampToValueAtTime(0.001, t + 0.3);
+    o.connect(g2); g2.connect(c.destination);
+    o.start(t); o.stop(t + 0.32);
+
+    var o2 = c.createOscillator(); o2.type = 'triangle';
+    o2.frequency.setValueAtTime(230, t + 0.015);
+    var g3 = c.createGain();
+    g3.gain.setValueAtTime(0.07, t);
+    g3.gain.exponentialRampToValueAtTime(0.001, t + 0.55);
+    o2.connect(g3); g3.connect(c.destination);
+    o2.start(t + 0.015); o2.stop(t + 0.58);
+  }
+  function sfxSeal(){
+    var c = null;
+    try{ c = ac(); }catch(e){ return; }
+    if(!c) return;
+    var t = c.currentTime;
+    var o = c.createOscillator(); o.type = 'sine';
+    o.frequency.setValueAtTime(320, t);
+    o.frequency.exponentialRampToValueAtTime(80, t + 0.18);
+    var g = c.createGain();
+    g.gain.setValueAtTime(0.35, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.35);
+    o.connect(g); g.connect(c.destination);
+    o.start(t); o.stop(t + 0.38);
+  }
+
+  /* ---------- 升堂单数据 ---------- */
+  var TASKS = [
+    { id:1, owner:'吏部', act:'拆解需求，写成可勾选的清单', out:'任务表 v1' },
+    { id:2, owner:'户部', act:'盘点资源、预算与素材',       out:'资源清单' },
+    { id:3, owner:'兵部', act:'出主方案 + 一个备选',        out:'方案对比表' },
+    { id:4, owner:'工部', act:'做可视化原型（场景与动效）', out:'可运行 demo' },
+    { id:5, owner:'礼部', act:'写对外说明与演示文案',       out:'说明文档' }
+  ];
+
+  /* ============================================================
+     真实模式
+     ------------------------------------------------------------
+     由 stage/server.py 托管时（http 协议），拆单走真模型；
+     直接双击打开（file 协议）时，用上面写死的 TASKS 演一遍。
+     两种模式下附议、勘验、汇总仍是演示逻辑——那几态还没实现。
+     ============================================================ */
+  var LIVE = location.protocol === 'http:' || location.protocol === 'https:';
+  var LIVE_TASKS = null;
+
+  /** 调后端拆单，边收事件边回报。返回 {order} 或 {error}。 */
+  function fetchOrder(requirement, onEvent){
+    return new Promise(function(resolve){
+      var url = '/api/order?requirement=' + encodeURIComponent(requirement);
+      var es = new EventSource(url);
+      var done = false;
+
+      es.onmessage = function(ev){
+        var data;
+        try { data = JSON.parse(ev.data); } catch(e){ return; }
+        if(onEvent){ onEvent(data); }
+        if(data.type === 'order/final'){
+          done = true;
+          es.close();
+          resolve(data);
+        }
+      };
+      es.onerror = function(){
+        if(done) return;
+        es.close();
+        resolve({ error: '连不上演出服务（stage/server.py 是否在跑？）' });
+      };
+    });
+  }
+
+  var orderNo = '';
+
+  /** 数一数这一单用到了几个不同的司（用于约束行）。 */
+  function distinctDepts(list){
+    var seen = {};
+    list.forEach(function(t){ seen[t.owner] = 1; });
+    return Object.keys(seen).length;
+  }
+
+  function orderHTML(text, overrideGoal){
+    var list = LIVE_TASKS || TASKS;
+    var raw = overrideGoal || text;
+    var goal = raw.length > 52 ? raw.slice(0, 52) + '…' : raw;
+    var rows = list.map(function(t){
+      return '<div class="t-row" data-id="' + t.id + '">' +
+        '<span class="no">' + t.id + '</span>' +
+        '<span class="owner">' + t.owner + '</span>' +
+        '<span class="act">' + t.act + '</span>' +
+        '<span class="out">→ ' + t.out + '</span>' +
+        '<span class="mark">✓</span>' +
+      '</div>';
+    }).join('');
+    return '<div class="sc-head">' +
+        '<span class="sc-title">升 堂 单</span>' +
+        '<span class="sc-no">编号 ' + orderNo + '</span>' +
+      '</div>' +
+      '<div class="sc-meta">' +
+        '<p><b>目标</b>' + goal + '</p>' +
+        '<p><b>验收</b>① ' + list.length + ' 项交付物齐全　② 每项有可复核证据　③ 刑部勘验通过　④ 主公验收</p>' +
+        '<p><b>约束</b>本单开 ' + distinctDepts(list) + ' 司（刑部只审不做）／ 闸门 150k　70% 冻结范围</p>' +
+        '<p><b>须批</b>无。花钱、安装、删除、对外发送须主公批准。</p>' +
+      '</div>' +
+      '<div class="sc-tasks">' + rows + '</div>' +
+      '<div class="sc-note" id="scNote"></div>' +
+      '<div class="sc-foot">附议一轮 · 有异议写改哪条，无异议回「附议」 · 执行后须过刑部勘验</div>';
+  }
+
+  function resultHTML(){
+    var list = LIVE_TASKS || TASKS;
+    var rows = list.map(function(t){
+      return '<div class="d-row">' +
+        '<span class="d-ck">✓</span>' +
+        '<span class="d-no">' + t.id + '</span>' +
+        '<span class="d-own">' + t.owner + '</span>' +
+        '<span class="d-out">' + t.out + '</span>' +
+      '</div>';
+    }).join('');
+    return '<div class="sc-head">' +
+        '<span class="sc-title">升 堂 结 果</span>' +
+        '<span class="sc-no">编号 ' + orderNo + '</span>' +
+      '</div>' +
+      '<div class="sc-meta">' +
+        '<p><b>目标</b>已达成（' + list.length + ' / ' + list.length + ' 项交活，全部附证据）</p>' +
+        '<p><b>勘验</b>刑部独立核验：' + list.length + ' 项全过，其中第 4 项经补证后通过</p>' +
+        '<p><b>结论</b>① 朝堂场景与「升堂」仪式跑通　② 八态全程可视　③ 附议轮可打断、可改单　④ 刑部勘验拦住了一次「无证据交活」</p>' +
+        '<p><b>待批</b>无。下一步建议：接真实 Agent，把脚本换成实时事件。</p>' +
+      '</div>' +
+      '<div class="sc-deliver">' +
+        '<div class="d-title">交 付 清 单</div>' + rows +
+      '</div>' +
+      '<div class="sc-foot static">主公请裁：定稿 ／ 退回（写明改哪几条）／ 否决</div>';
+  }
+
+  async function openScroll(html, hold){
+    scrollInner.innerHTML = html;
+    scrollEl.classList.add('open');
+    await wait(hold || 620);
+  }
+  async function closeScroll(){
+    scrollEl.classList.remove('open');
+    await wait(620);
+  }
+
+  /* ---------- 主流程 ---------- */
+  var busy = false;
+
+  function newOrderNo(){
+    var d = new Date();
+    var p = function(n){ return (n < 10 ? '0' : '') + n; };
+    return '' + d.getFullYear() + p(d.getMonth()+1) + p(d.getDate()) + '-01';
+  }
+
+  async function startCourt(){
+    var text = req.value.trim();
+    if(!text){
+      composer.classList.remove('err');
+      void composer.offsetWidth;
+      composer.classList.add('err');
+      req.focus();
+      return;
+    }
+    if(busy) return;
+    busy = true;
+    send.disabled = true;
+    orderNo = newOrderNo();
+
+    /* 0 收起奏折 */
+    composer.classList.add('fold');
+    await wait(180);
+
+    /* 1 惊堂木：抬 → 落 → 震 */
+    gavel.classList.add('raise');
+    await wait(170);
+    gavel.classList.remove('raise');
+    gavel.classList.add('slam');
+    sfxSlam();
+    stage.classList.add('shake');
+    fx.classList.add('go');
+    setTimeout(function(){ stage.classList.remove('shake'); }, 560 / speed);
+    setTimeout(function(){ fx.classList.remove('go'); }, 900 / speed);
+    setPhase(1);
+    await wait(230);
+
+    /* 2 六席依次亮灯 */
+    for(var i=0;i<MEMBERS.length;i++){
+      MEMBERS[i].el.classList.add('lit');
+      await wait(85);
+    }
+    await wait(120);
+
+    /* 3 齐呼「升堂」 */
+    MEMBERS.forEach(function(m, i){
+      setTimeout(function(){ shout(m, '升堂'); }, i * 78 / speed);
+    });
+    await wait(1150);
+
+    /* 4 中堂入场 */
+    zhongtang.classList.add('enter');
+    await wait(1150);
+    zhongtang.classList.add('stand');
+    await wait(120);
+
+    say(ztBubble, '禀主公，此单臣已过目。');
+    await wait(1350);
+    say(ztBubble, '请示下：要的是「能看的成品」，还是「能跑的流程」？');
+    await wait(1900);
+
+    if(LIVE){
+      /* ---- 真实模式：拆单走真模型，事件边收边报 ---- */
+      say(ztBubble, '主公稍候，臣这就拆单。');
+
+      var res = await fetchOrder(text, function(ev){
+        if(ev.type === 'order/attempt'){
+          say(ztBubble, '第 ' + ev.index + ' 轮拆单……');
+        }else if(ev.type === 'order/rejected'){
+          say(ztBubble, '第 ' + ev.index + ' 轮不合格：' + (ev.problems || []).join('；'));
+        }else if(ev.type === 'order/accepted'){
+          say(ztBubble, '第 ' + ev.index + ' 轮过检，请主公过目。');
+        }
+      });
+
+      if(res.error){
+        /* 终局兜底：如实请示，绝不拿坏单子往下演 */
+        say(ztBubble, '臣拆不出来——' + res.error + '　请主公示下。');
+        setPhase(0);
+        composer.classList.remove('fold');
+        send.disabled = false;
+        busy = false;
+        return;
+      }
+
+      LIVE_TASKS = (res.order['任务'] || []).map(function(t, i){
+        return { id: i + 1, owner: t['司'], act: t['做什么'], out: t['交付物'] };
+      });
+      setPhase(1);
+      await openScroll(orderHTML(text, res.order['目标']));
+    }else{
+      /* ---- 演示模式：用写死的任务表演一遍 ---- */
+      say(ztBubble, '主公未置可否——臣按「既能看、也能跑」拆，本单开五司，刑部只审不做。');
+      await wait(1500);
+      setPhase(1);
+      await openScroll(orderHTML(text));
+    }
+    hideBubble(ztBubble);
+
+    var rows = scrollInner.querySelectorAll('.t-row');
+    for(var k=0;k<rows.length;k++){
+      rows[k].classList.add('in');
+      await wait(165);
+    }
+    await wait(700);
+
+    /* 6 附议第一轮：刑部不表态，只记录 */
+    setPhase(2);
+    var dissent = byName('兵部');
+    for(var j=0;j<MEMBERS.length;j++){
+      var m = MEMBERS[j];
+      await wait(230);
+      if(m === dissent){ shout(m, '异议', true); }
+      else if(m.name === '刑部'){ shout(m, '待勘'); }
+      else { shout(m, '附议'); }
+    }
+    await wait(700);
+
+    /* 7 中堂处理异议 */
+    say(ztBubble, '兵部说得是。第 4 条工期不足，拆为两期：先出静态场景，再上动效。');
+    var r4 = scrollInner.querySelector('.t-row[data-id="4"]');
+    if(r4){
+      r4.classList.add('changed');
+      r4.querySelector('.act').textContent = '做可视化原型（一期静态场景）';
+      r4.querySelector('.out').textContent = '→ 可运行 demo';
+    }
+    var note = scrollInner.querySelector('#scNote');
+    if(note){
+      note.textContent = '改单记录：第 4 条由「场景与动效」拆为两期，一期只做静态场景。依据：兵部异议。';
+      note.classList.add('show');
+    }
+    await wait(2100);
+    hideBubble(ztBubble);
+    await wait(400);
+
+    /* 8 附议第二轮 */
+    MEMBERS.forEach(function(m, i){
+      setTimeout(function(){ shout(m, '附议'); }, i * 70 / speed);
+    });
+    await wait(900);
+    say(ztBubble, '清单已定，开始执行。');
+    await wait(1100);
+    hideBubble(ztBubble);
+
+    /* 9 执行：五司接活，刑部不动 */
+    setPhase(3);
+    for(var n=0;n<rows.length;n++){
+      rows[n].classList.add('running');
+      await wait(460);
+      rows[n].classList.remove('running');
+      rows[n].classList.add('done');
+    }
+    await wait(500);
+
+    /* 10 勘验：刑部独立核证，只看单与证据，不问过程 */
+    setPhase(4);
+    MEMBERS.forEach(function(mm){ if(mm.name !== '刑部') mm.el.classList.add('dim'); });
+    var xing = byName('刑部');
+    await wait(220);
+    xing.el.classList.add('lit');
+    say(ztBubble, '刑部勘验：只对单核证，不问过程。');
+    await wait(1650);
+    hideBubble(ztBubble);
+
+    for(var q=0;q<rows.length;q++){
+      rows[q].querySelector('.mark').textContent = '核';
+      await wait(240);
+    }
+    await wait(320);
+
+    var r4v = rows[3];
+    r4v.classList.add('reject');
+    r4v.querySelector('.mark').textContent = '✗';
+    say(ztBubble, '第 4 条只有结论、没有证据。退回工部补交。');
+    await wait(1950);
+    hideBubble(ztBubble);
+    r4v.classList.remove('reject');
+    r4v.querySelector('.mark').textContent = '✓';
+    say(ztBubble, '补证已到，五条全过。');
+    await wait(1350);
+    hideBubble(ztBubble);
+    MEMBERS.forEach(function(mm){ mm.el.classList.remove('dim'); });
+    await wait(300);
+
+    /* 11 汇总 */
+    setPhase(5);
+    await closeScroll();
+    await openScroll(resultHTML(), 700);
+    await wait(600);
+    setPhase(6);
+    verdict.classList.add('show');
+    busy = false;
+  }
+
+  /* ---------- 验收 ---------- */
+  verdict.addEventListener('click', async function(e){
+    var btn = e.target.closest('.v-btn');
+    if(!btn) return;
+    var v = btn.dataset.v;
+    verdict.classList.remove('show');
+
+    if(v === 'ok'){
+      setPhase(7);
+      seal.classList.add('stamp');
+      sfxSeal();
+      await wait(1400);
+      await closeScroll();
+      await wait(300);
+      say(ztBubble, '谢主公。此单结案，已归档。');
+    }else if(v === 'back'){
+      setPhase(2);
+      say(ztBubble, '臣即改单，从「附议」重跑。');
+      await wait(1600);
+      hideBubble(ztBubble);
+      verdict.classList.add('show');
+    }else{
+      setPhase(7);
+      say(ztBubble, '整单作废，臣记一句原因归档。');
+      await wait(1500);
+      await closeScroll();
+    }
+  });
+
+  /* ---------- 控件 ---------- */
+  send.addEventListener('click', startCourt);
+  req.addEventListener('keydown', function(e){
+    if(e.key === 'Enter' && (e.ctrlKey || e.metaKey)){ e.preventDefault(); startCourt(); }
+  });
+  gavel.addEventListener('click', function(){
+    if(!busy){ startCourt(); }
+  });
+  $('#speedBtn').addEventListener('click', function(){
+    speed = speed === 1 ? 2 : (speed === 2 ? 4 : 1);
+    this.textContent = speed + '×';
+  });
+  $('#resetBtn').addEventListener('click', function(){ location.reload(); });
+
+  /* ---------- 真实模式标记 ---------- */
+  if(LIVE){
+    var bar = document.querySelector('.toolbar');
+    var tag = document.createElement('span');
+    tag.textContent = '真模型 · 拆单';
+    tag.style.cssText =
+      'padding:6px 12px;border:1px solid rgba(224,82,63,.55);border-radius:2px;' +
+      'color:#e0523f;font-size:12.5px;letter-spacing:.12em;background:rgba(192,57,43,.12)';
+    bar.insertBefore(tag, bar.firstChild);
+    req.placeholder = '主公请下旨：写下真实需求，点「升堂」由模型拆单……';
+  }
+
+  /* ---------- 演示模式：?auto=1 自动开演（截图 / 演示用） ---------- */
+  if(/[?&]auto=1/.test(location.search)){
+    var sp = /[?&]speed=(\d)/.exec(location.search);
+    if(sp){ speed = +sp[1]; $('#speedBtn').textContent = speed + '×'; }
+    req.value = '把「升堂工作流」做成一个能看的朝堂场景：输入需求、点升堂、惊堂木一响，六司齐呼，中堂出来拆单、收附议，刑部独立勘验后汇总。验收标准：能完整跑完一轮并结案。';
+    setTimeout(function(){ startCourt(); }, 500);
+  }
+
+  /* ---------- 定妆模式：?pose=order / result，跳过动画只看版式 ---------- */
+  var poseM = /[?&]pose=(\w+)/.exec(location.search);
+  if(poseM){
+    document.documentElement.classList.add('pose-mode');
+    orderNo = newOrderNo();
+    composer.classList.add('fold');
+    MEMBERS.forEach(function(m){ m.el.classList.add('lit'); });
+    zhongtang.classList.add('pose','stand');
+    if(poseM[1] === 'order'){
+      setPhase(2);
+      scrollInner.innerHTML = orderHTML('把「升堂工作流」做成一个能看的朝堂场景：输入需求、点升堂、惊堂木一响，六司齐呼，中堂出来拆单、收附议，刑部独立勘验后汇总。');
+      scrollEl.classList.add('open');
+      Array.prototype.forEach.call(scrollInner.querySelectorAll('.t-row'), function(r, i){
+        r.classList.add('in');
+        if(i < 3) r.classList.add('done');
+      });
+      var nt = scrollInner.querySelector('#scNote');
+      if(nt){ nt.textContent = '改单记录：第 4 条由「场景与动效」拆为两期，一期只做静态场景。依据：兵部异议。'; nt.classList.add('show'); }
+      scrollInner.querySelector('.t-row[data-id="4"]').classList.add('changed');
+    }else if(poseM[1] === 'verify'){
+      setPhase(4);
+      scrollInner.innerHTML = orderHTML('把「升堂工作流」做成一个能看的朝堂场景：输入需求、点升堂、惊堂木一响，六司齐呼，中堂出来拆单、收附议，刑部独立勘验后汇总。');
+      scrollEl.classList.add('open');
+      Array.prototype.forEach.call(scrollInner.querySelectorAll('.t-row'), function(r, i){
+        r.classList.add('in','done');
+        r.querySelector('.mark').textContent = '核';
+        if(i === 3){
+          r.classList.add('reject');
+          r.querySelector('.mark').textContent = '✗';
+        }
+      });
+      MEMBERS.forEach(function(m){ if(m.name !== '刑部') m.el.classList.add('dim'); });
+      say(ztBubble, '第 4 条只有结论、没有证据。退回工部补交。', true);
+    }else{
+      setPhase(6);
+      scrollInner.innerHTML = resultHTML();
+      scrollEl.classList.add('open');
+      verdict.classList.add('show');
+    }
+  }
+
+})();
+</script>
+</body>
+</html>
