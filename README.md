@@ -137,7 +137,7 @@
 ### 1. 装依赖
 
 ```bash
-git clone <this-repo>
+git clone https://github.com/DravenP530/shengtang.git
 cd shengtang
 python -m venv .venv
 # Windows
