@@ -19,6 +19,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from orchestrator.llm import FastPathUnavailable  # noqa: E402
 from orchestrator.orchestrator import OrderRejected, Zhongtang, parse_question  # noqa: E402
 from orchestrator.schema import ParseError, parse_order, validate  # noqa: E402
+from orchestrator.execute import (  # noqa: E402
+    allocate_case_id,
+    choose_filename,
+    execute_order,
+    strip_model_text,
+)
+from stage.server import unknown_model_message  # noqa: E402
 
 
 # ---------------------------------------------------------------- 测试替身
@@ -41,7 +48,7 @@ class ScriptedLLM:
             raise AssertionError("测试脚本里的响应不够用，说明重试次数超出预期")
         return self.responses[self.calls - 1]
 
-    def quick(self, prompt: str) -> str:
+    def quick(self, prompt: str, **kwargs) -> str:
         self.fast_calls += 1
         return self._next(prompt)
 
@@ -312,12 +319,106 @@ def test_clarify_failure_does_not_block():
     assert llm.calls == 2
 
 
+def test_unknown_model_is_rejected_when_list_is_known():
+    """端点名单取到了，就不许用名单以外的名字。"""
+    msg = unknown_model_message("not-a-real-model", ["qwen3.8-27b"])
+    assert msg is not None
+    assert "qwen3.8-27b" in msg
+    assert unknown_model_message("qwen3.8-27b", ["qwen3.8-27b"]) is None
+    assert unknown_model_message("", ["qwen3.8-27b"]) is None
+
+
+def test_unknown_model_is_allowed_when_list_failed():
+    """名单没取到时不拦，避免端点临时失败把升堂卡死。"""
+    assert unknown_model_message("qwen3.8-27b", None) is None
+
+
 def test_empty_answer_keeps_requirement():
     """主公跳过（空回答）→ 需求原样送进拆单，不拼一个空的「主公补充」。"""
     llm = ScriptedLLM(["要几个司？", GOOD])
     Zhongtang(llm, max_attempts=1).issue_order("做个朝堂页面", clarifier=lambda q: "   ")
 
     assert "主公补充" not in llm.prompts[1]
+
+
+def test_case_folder_gets_a_new_number():
+    """同一天再升一堂，不覆盖上一场的案卷。"""
+    import tempfile
+    from pathlib import Path
+
+    root = Path(tempfile.mkdtemp())
+    (root / "20261024-01").mkdir()
+    assert allocate_case_id(root, "20261024") == "20261024-02"
+
+
+def test_execute_writes_files_and_product_page():
+    """五司的正文落进各司夹子，成品页能打开，刑部只凭文件在不在下判。"""
+    import tempfile
+    from pathlib import Path
+
+    from orchestrator.schema import Order, Task
+
+    class Pen:
+        def quick(self, prompt, **kwargs):
+            if "做升日动画" in prompt:
+                return "<!DOCTYPE html><html><body><h1>升日</h1></body></html>"
+            return "# 说明\n\n这一条已经写成文件，可以打开核对。"
+
+    order = Order(
+        goal="做一页能打开的升日动画",
+        tasks=[
+            Task("礼部", "写一句画面说明", "画面说明"),
+            Task("兵部", "做升日动画", "升日动画"),
+            Task("工部", "写一句如何打开", "打开说明"),
+        ],
+    )
+    root = Path(tempfile.mkdtemp())
+    events = []
+    result = execute_order(
+        Pen(), order, "做个动画", root, on_event=events.append, order_no="20261024-01"
+    )
+
+    assert result.ok
+    assert result.product.is_file()
+    assert result.product.parent == root
+    assert result.product.suffix == ".html"
+    names = sorted(p.name for p in root.iterdir())
+    assert names == [result.product.name]
+    assert not (root / "升堂单.md").exists()
+    assert events[-1]["type"] == "execute/final"
+
+
+def test_empty_delivery_is_rejected_without_a_file():
+    """交回来是空的，刑部退回，而且不能冒出一份假文件。"""
+    import tempfile
+    from pathlib import Path
+
+    from orchestrator.schema import Order, Task
+
+    class Empty:
+        def quick(self, prompt, **kwargs):
+            return "好的"
+
+    order = Order(
+        goal="写一份说明",
+        tasks=[
+            Task("礼部", "写说明", "说明"),
+            Task("兵部", "写做法", "做法"),
+            Task("工部", "写如何打开", "打开"),
+        ],
+    )
+    root = Path(tempfile.mkdtemp())
+    result = execute_order(Empty(), order, "写说明", root, order_no="20261024-03")
+    assert not result.ok
+    assert all(not item.ok for item in result.checks)
+    assert list(root.iterdir()) == []
+
+
+def test_strip_fence_and_choose_html_name():
+    body = strip_model_text("说明如下：\n```html\n<!DOCTYPE html><p>戏</p>\n```\n以上。")
+    assert body.startswith("<!DOCTYPE html>")
+    name = choose_filename("升日动画", body, set())
+    assert name.endswith(".html")
 
 
 # ---------------------------------------------------------------- 跑起来

@@ -20,6 +20,7 @@ import argparse
 import dataclasses
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -28,7 +29,7 @@ import urllib.request
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 # 允许 `python -m stage.server` 从仓库根目录跑
 ROOT = Path(__file__).resolve().parent.parent
@@ -37,8 +38,13 @@ if str(ROOT) not in sys.path:
 
 from orchestrator.llm import LLM, LLMConfig  # noqa: E402
 from orchestrator.orchestrator import OrderRejected, Zhongtang  # noqa: E402
+from orchestrator.execute import execute_order  # noqa: E402
+from orchestrator.schema import parse_order, validate  # noqa: E402
 
+CASE_ROOT = Path(__file__).resolve().parents[2] / "成品"
 STAGE_FILE = Path(__file__).resolve().parent / "index.html"
+_EXEC_LOCK = threading.Lock()
+_CASE_FILE = re.compile(r"^/成品/([^/]+)$")
 
 CONFIG = LLMConfig.from_env()
 
@@ -53,6 +59,16 @@ _PENDING_LOCK = threading.Lock()
 
 #: 等主公回答的上限（秒）。超时就按原需求继续拆——问话是增益，不是门槛。
 ANSWER_TIMEOUT = 180.0
+
+
+def unknown_model_message(model: str, known: list[str] | None) -> str | None:
+    """名单取到了，就不许用名单以外的名字。名单没取到（known 为 None）则不拦。"""
+    if not model or known is None:
+        return None
+    if model in known:
+        return None
+    have = "、".join(known) if known else "（没有）"
+    return f"端点没有模型「{model}」。当前只有：{have}"
 
 
 class Server(ThreadingHTTPServer):
@@ -85,7 +101,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self) -> None:  # noqa: N802
-        path = urlparse(self.path).path
+        path = unquote(urlparse(self.path).path)
 
         if path in ("/", "/index.html"):
             if not STAGE_FILE.exists():
@@ -116,6 +132,12 @@ class Handler(BaseHTTPRequestHandler):
             self._send_bytes(b"", "image/x-icon", 204)
             return
 
+        case_file = self._case_file(path)
+        if case_file is not None:
+            kind = "text/html; charset=utf-8" if case_file.suffix.lower() in {".html", ".htm"} else "text/plain; charset=utf-8"
+            self._send_bytes(case_file.read_bytes(), kind)
+            return
+
         self._send_bytes("not found".encode(), "text/plain; charset=utf-8", 404)
 
     def do_HEAD(self) -> None:  # noqa: N802
@@ -132,8 +154,10 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self) -> None:  # noqa: N802
-        """主公的回话通道。SSE 只能服务端推客户端，回答得靠这条 POST 送回来。"""
         path = urlparse(self.path).path
+        if path == "/api/execute":
+            self._execute()
+            return
         if path != "/api/answer":
             self._send_bytes("not found".encode(), "text/plain; charset=utf-8", 404)
             return
@@ -172,6 +196,78 @@ class Handler(BaseHTTPRequestHandler):
         self._send_bytes(json.dumps({"ok": True}).encode(), "application/json; charset=utf-8")
 
     # ------------------------------------------------------------ 事件流
+
+    def _case_file(self, path: str) -> Path | None:
+        """只公开这一场的成品夹，不把各司草稿和案卷外的文件送出去。"""
+        match = _CASE_FILE.match(path)
+        if not match:
+            return None
+        name = match.group(1)
+        if name in {"", ".", ".."} or "/" in name or "\\" in name:
+            return None
+        root = CASE_ROOT.resolve()
+        target = (root / name).resolve()
+        try:
+            target.relative_to(root)
+        except ValueError:
+            return None
+        if target.is_file():
+            return target
+        return None
+
+    def _execute(self) -> None:
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = 0
+        if length > 100_000:
+            self._send_bytes("请求过大".encode(), "text/plain; charset=utf-8", 413)
+            return
+        raw = self.rfile.read(length) if length > 0 else b""
+        try:
+            data = json.loads(raw.decode("utf-8") or "{}")
+            order = parse_order(json.dumps(data.get("order") or {}, ensure_ascii=False))
+            problems = validate(order)
+        except Exception as exc:  # noqa: BLE001
+            self._send_bytes(
+                json.dumps({"ok": False, "error": f"升堂单不合格：{exc}"}, ensure_ascii=False).encode(),
+                "application/json; charset=utf-8",
+                400,
+            )
+            return
+        if problems:
+            self._send_bytes(
+                json.dumps({"ok": False, "error": "；".join(problems)}, ensure_ascii=False).encode(),
+                "application/json; charset=utf-8",
+                400,
+            )
+            return
+
+        requirement = str(data.get("requirement") or order.goal)[:2000]
+        model = str(data.get("model") or "").strip()
+
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "close")
+        self.end_headers()
+
+        def emit(event: dict) -> None:
+            payload = json.dumps(event, ensure_ascii=False)
+            self.wfile.write(f"data: {payload}\n\n".encode("utf-8"))
+            self.wfile.flush()
+
+        if not _EXEC_LOCK.acquire(blocking=False):
+            emit({"type": "execute/final", "error": "已有一场在执行，请稍候"})
+            return
+        try:
+            cfg = dataclasses.replace(CONFIG, model=model) if model else CONFIG
+            with LLM(cfg) as llm:
+                execute_order(llm, order, requirement, CASE_ROOT, on_event=emit)
+        except Exception as exc:  # noqa: BLE001
+            emit({"type": "execute/final", "error": f"{type(exc).__name__}: {exc}"})
+        finally:
+            _EXEC_LOCK.release()
 
     def _list_models(self) -> dict:
         """把端点的 /models 转给前端，供模型选择器用。"""
@@ -214,6 +310,14 @@ class Handler(BaseHTTPRequestHandler):
         if not requirement:
             emit({"type": "order/final", "error": "需求为空"})
             return
+
+        if model:
+            info = self._list_models()
+            known = None if info.get("error") else list(info.get("models") or [])
+            message = unknown_model_message(model, known)
+            if message:
+                emit({"type": "order/final", "error": message})
+                return
 
         # 同一时间只拆一张单。EventSource 断线会自动重发，不挡就会叠出多个模型调用。
         if not _ORDER_LOCK.acquire(blocking=False):
