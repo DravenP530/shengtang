@@ -88,7 +88,7 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
 /* ============ 队员 ============ */
 .courtiers{position:absolute;inset:0;z-index:10}
 .courtier{position:absolute;width:96px;height:140px;transform-origin:bottom center;
-  transition:filter .5s}
+  transition:filter .5s,opacity .5s}
 .courtier svg{width:96px;height:126px;display:block;color:#4a2a1d;
   transition:color .55s,filter .55s;
   filter:drop-shadow(0 0 1px rgba(216,178,106,.30))}
@@ -103,9 +103,10 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
   transform:translateX(-50%);background:rgba(216,178,106,.26)}
 .courtier.lit .lantern{background:radial-gradient(circle at 50% 34%,#ffe3b4,#e0523f 58%,#8a2b1e);
   box-shadow:0 0 28px 9px rgba(224,82,63,.55),0 0 70px 26px rgba(224,82,63,.18)}
-/* 勘验时其他司压暗：只留刑部在场 */
-.courtier.dim{opacity:.30}
-.courtier.dim svg{color:#33201a;filter:none}
+/* 勘验时其他司压暗：只留刑部在场。压暗但不压死——还能看出人形，只是退到背景 */
+.courtier.dim{opacity:.55}
+.courtier.dim svg{color:#4a2a1d;filter:drop-shadow(0 0 1px rgba(216,178,106,.22))}
+.courtier.dim .nameplate{color:rgba(216,178,106,.34)}
 .courtier.dim .lantern{background:radial-gradient(circle at 50% 34%,#42160e,#1b0604);
   box-shadow:0 0 0 rgba(0,0,0,0)}
 
@@ -816,6 +817,8 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
 
   function resultHTML(){
     var list = LIVE_TASKS || TASKS;
+    /* 与时间线一致：退回补证的是第 min(4, n) 条，不能写死第 4 条 */
+    var fixNo = Math.min(4, list.length);
     var rows = list.map(function(t){
       return '<div class="d-row">' +
         '<span class="d-ck">✓</span>' +
@@ -831,7 +834,7 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
       '<div class="sc-meta">' +
         '<p><b>拆单</b>已达成（' + list.length + ' 条任务，真模型生成）</p>' +
         '<p><b>执行</b>未接入 —— 本版只到拆单，没有真的动手，也没有产生任何文件</p>' +
-        '<p><b>勘验</b>演示逻辑：' + list.length + ' 项全过，其中第 4 项经补证后通过</p>' +
+        '<p><b>勘验</b>演示逻辑：' + list.length + ' 项全过，其中第 ' + fixNo + ' 项经补证后通过</p>' +
         '<p><b>待批</b>下一步把执行接上，真的产出文件到 workspace 目录。</p>' +
       '</div>' +
       '<div class="sc-deliver">' +
@@ -980,17 +983,20 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
     }
     await wait(700);
 
-    /* 7 中堂处理异议 */
-    say(ztBubble, '兵部说得是。第 4 条工期不足，拆为两期：先出静态场景，再上动效。');
-    var r4 = scrollInner.querySelector('.t-row[data-id="4"]');
+    /* 7 中堂处理异议。单子条数由模型定（2–5 条），「第 4 条」不能写死 */
+    var fixIdx = Math.min(3, rows.length - 1);
+    var r4 = rows[fixIdx] || null;
+    say(ztBubble, '兵部说得是。第 ' + (fixIdx + 1) + ' 条工期不足，拆为两期：先出静态场景，再上动效。');
     if(r4){
       r4.classList.add('changed');
-      r4.querySelector('.act').textContent = '做可视化原型（一期静态场景）';
-      r4.querySelector('.out').textContent = '→ 可运行 demo';
+      var actEl = r4.querySelector('.act');
+      var outEl = r4.querySelector('.out');
+      if(actEl) actEl.textContent = '做可视化原型（一期静态场景）';
+      if(outEl) outEl.textContent = '→ 可运行 demo';
     }
     var note = scrollInner.querySelector('#scNote');
     if(note){
-      note.textContent = '改单记录：第 4 条由「场景与动效」拆为两期，一期只做静态场景。依据：兵部异议。';
+      note.textContent = '改单记录：第 ' + (fixIdx + 1) + ' 条由「场景与动效」拆为两期，一期只做静态场景。依据：兵部异议。';
       note.classList.add('show');
     }
     await wait(2100);
@@ -1038,18 +1044,22 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
     }
     await wait(320);
 
-    var r4v = rows[3];
-    r4v.classList.add('reject');
-    r4v.querySelector('.mark').textContent = '✗';
+    /* 退回的那条跟着单子走：条数不足 4 条时退回最后一条，绝不越界 */
+    var r4v = rows[fixIdx] || null;
     var gongbu = byName('工部');
-    if(gongbu) setState(gongbu, 'blocked', '缺证据');
-    say(ztBubble, '第 4 条只有结论、没有证据。退回工部补交。');
-    await wait(1950);
-    hideBubble(ztBubble);
-    r4v.classList.remove('reject');
-    r4v.querySelector('.mark').textContent = '✓';
+    if(r4v){
+      r4v.classList.add('reject');
+      var mk = r4v.querySelector('.mark');
+      if(mk) mk.textContent = '✗';
+      if(gongbu) setState(gongbu, 'blocked', '缺证据');
+      say(ztBubble, '第 ' + (fixIdx + 1) + ' 条只有结论、没有证据。退回工部补交。');
+      await wait(1950);
+      hideBubble(ztBubble);
+      r4v.classList.remove('reject');
+      if(mk) mk.textContent = '✓';
+    }
     if(gongbu) setState(gongbu, 'done', '已补证');
-    say(ztBubble, '补证已到，五条全过。');
+    say(ztBubble, '补证已到，' + rows.length + ' 条全过。');
     await wait(1350);
     hideBubble(ztBubble);
     setState(xing, 'done', '已核');
@@ -1093,6 +1103,29 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
       await wait(1500);
       await closeScroll(true);
     }
+  });
+
+  /* ---------- 兜底：演出层任何一处 JS 炸了，界面都不能永久卡住 ---------- */
+  window.addEventListener('unhandledrejection', function(ev){
+    var reason = ev.reason;
+    var msg = (reason && reason.message) ? reason.message : String(reason);
+    try{
+      say(ztBubble, '臣这里出了岔子（' + msg + '）——请主公重下一单。');
+      setPhase(0);
+      MEMBERS.forEach(function(mm){
+        mm.el.classList.remove('dim','lit');
+        setState(mm, 'idle');
+      });
+      verdict.classList.remove('show');
+      askHide();
+      scrollEl.classList.remove('open');
+      zhongtang.classList.remove('aside');
+      composer.classList.remove('fold');
+      send.disabled = false;
+      busy = false;
+    }catch(e){ /* 兜底里再炸就认了，别再往外抛 */ }
+    if(window.console && console.error) console.error('[升堂] 演出层异常：', reason);
+    ev.preventDefault();
   });
 
   /* ---------- 控件 ---------- */
