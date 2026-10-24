@@ -27,3 +27,6 @@ _*.html
 .env
 .env.*
 *.local
+
+# 本机云端钥匙，不进仓库
+.shengtang/

@@ -40,6 +40,17 @@ from orchestrator.llm import LLM, LLMConfig  # noqa: E402
 from orchestrator.orchestrator import OrderRejected, Zhongtang  # noqa: E402
 from orchestrator.execute import execute_order  # noqa: E402
 from orchestrator.schema import parse_order, validate  # noqa: E402
+from stage.cloud import (  # noqa: E402
+    CloudError,
+    CloudLink,
+    config_for,
+    fetch_model_ids,
+    forget,
+    load_links,
+    menu_view,
+    prepare_link,
+    remember,
+)
 
 CASE_ROOT = Path(__file__).resolve().parents[2] / "成品"
 STAGE_FILE = Path(__file__).resolve().parent / "index.html"
@@ -158,6 +169,12 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/execute":
             self._execute()
             return
+        if path == "/api/cloud":
+            self._connect_cloud()
+            return
+        if path == "/api/cloud/forget":
+            self._forget_cloud()
+            return
         if path != "/api/answer":
             self._send_bytes("not found".encode(), "text/plain; charset=utf-8", 404)
             return
@@ -245,6 +262,7 @@ class Handler(BaseHTTPRequestHandler):
 
         requirement = str(data.get("requirement") or order.goal)[:2000]
         model = str(data.get("model") or "").strip()
+        profile = str(data.get("profile") or "").strip()
 
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
@@ -261,7 +279,10 @@ class Handler(BaseHTTPRequestHandler):
             emit({"type": "execute/final", "error": "已有一场在执行，请稍候"})
             return
         try:
-            cfg = dataclasses.replace(CONFIG, model=model) if model else CONFIG
+            cfg, message = self._call_config(profile, model)
+            if message or cfg is None:
+                emit({"type": "execute/final", "error": message or "模型没选对"})
+                return
             with LLM(cfg) as llm:
                 execute_order(llm, order, requirement, CASE_ROOT, on_event=emit)
         except Exception as exc:  # noqa: BLE001
@@ -270,10 +291,11 @@ class Handler(BaseHTTPRequestHandler):
             _EXEC_LOCK.release()
 
     def _list_models(self) -> dict:
-        """把端点的 /models 转给前端，供模型选择器用。"""
+        """本机名单给选择器，云端名单另附。云端一项里不带钥匙。"""
+        clouds = menu_view(load_links())
         base = CONFIG.resolved_fast_base_url()
         if not base:
-            return {"models": [], "current": CONFIG.model, "error": "未配置模型地址"}
+            return {"models": [], "current": CONFIG.model, "error": "未配置模型地址", "clouds": clouds}
 
         req = urllib.request.Request(f"{base}/models", method="GET")
         key = CONFIG.resolved_fast_api_key()
@@ -283,15 +305,91 @@ class Handler(BaseHTTPRequestHandler):
             with urllib.request.urlopen(req, timeout=10) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
         except Exception as exc:  # noqa: BLE001
-            return {"models": [], "current": CONFIG.model, "error": str(exc)}
+            return {"models": [], "current": CONFIG.model, "error": str(exc), "clouds": clouds}
 
         ids = [m.get("id") for m in (data.get("data") or []) if m.get("id")]
-        return {"models": ids, "current": CONFIG.model}
+        return {"models": ids, "current": CONFIG.model, "clouds": clouds}
+
+    def _read_json(self, limit: int = 8000) -> dict:
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = 0
+        if length > limit:
+            raise CloudError("请求过大")
+        raw = self.rfile.read(length) if length else b""
+        try:
+            data = json.loads(raw.decode("utf-8") or "{}")
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            raise CloudError("请求格式不对") from exc
+        if not isinstance(data, dict):
+            raise CloudError("请求格式不对")
+        return data
+
+    def _send_json(self, payload: dict, status: int = 200) -> None:
+        self._send_bytes(
+            json.dumps(payload, ensure_ascii=False).encode(),
+            "application/json; charset=utf-8",
+            status,
+        )
+
+    def _connect_cloud(self) -> None:
+        try:
+            data = self._read_json()
+            kind, label, base = prepare_link(
+                str(data.get("kind") or ""),
+                str(data.get("api_key") or ""),
+                str(data.get("base_url") or ""),
+            )
+            key = str(data.get("api_key") or "").strip()
+            models = fetch_model_ids(base, key)
+        except CloudError as exc:
+            self._send_json({"ok": False, "error": str(exc)}, 400)
+            return
+        remember(CloudLink(kind, label, base, key, models))
+        self._send_json({"ok": True, "kind": kind, "label": label, "models": models})
+
+    def _forget_cloud(self) -> None:
+        try:
+            data = self._read_json()
+        except CloudError as exc:
+            self._send_json({"ok": False, "error": str(exc)}, 400)
+            return
+        kind = str(data.get("kind") or "").strip()
+        if kind not in ("api", "plan"):
+            self._send_json({"ok": False, "error": "请选择要断开的那一路"}, 400)
+            return
+        forget(kind)
+        self._send_json({"ok": True, "kind": kind})
+
+    def _call_config(self, profile: str, model: str) -> tuple[LLMConfig | None, str | None]:
+        """按所选来源配这一单。本机走启动时的地址，云端走存好的那把钥匙。"""
+        profile = (profile or "").strip()
+        model = (model or "").strip()
+        if profile in ("", "local"):
+            if model:
+                info = self._list_models()
+                known = None if info.get("error") else list(info.get("models") or [])
+                message = unknown_model_message(model, known)
+                if message:
+                    return None, message
+            cfg = dataclasses.replace(CONFIG, model=model) if model else CONFIG
+            return cfg, None
+        link = load_links().get(profile)
+        if link is None:
+            return None, "这一路云端还没接入"
+        if not model:
+            return None, "请先选一个云端模型"
+        message = unknown_model_message(model, link.models)
+        if message:
+            return None, message
+        return config_for(CONFIG, link, model), None
 
     def _stream_order(self) -> None:
         qs = parse_qs(urlparse(self.path).query)
         requirement = (qs.get("requirement") or [""])[0].strip()
         model = (qs.get("model") or [""])[0].strip()
+        profile = (qs.get("profile") or [""])[0].strip()
 
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
@@ -311,13 +409,10 @@ class Handler(BaseHTTPRequestHandler):
             emit({"type": "order/final", "error": "需求为空"})
             return
 
-        if model:
-            info = self._list_models()
-            known = None if info.get("error") else list(info.get("models") or [])
-            message = unknown_model_message(model, known)
-            if message:
-                emit({"type": "order/final", "error": message})
-                return
+        cfg, message = self._call_config(profile, model)
+        if message or cfg is None:
+            emit({"type": "order/final", "error": message or "模型没选对"})
+            return
 
         # 同一时间只拆一张单。EventSource 断线会自动重发，不挡就会叠出多个模型调用。
         if not _ORDER_LOCK.acquire(blocking=False):
@@ -354,8 +449,6 @@ class Handler(BaseHTTPRequestHandler):
                     _PENDING.pop(sid, None)
 
         try:
-            # 每张单可以带自己的模型，互不影响
-            cfg = dataclasses.replace(CONFIG, model=model) if model else CONFIG
             with LLM(cfg) as llm:
                 zt = Zhongtang(llm, max_attempts=3, on_event=emit, fast=True)
                 order = zt.issue_order(requirement, clarifier=clarifier)

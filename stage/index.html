@@ -411,12 +411,12 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
   border:1px solid rgba(216,178,106,.22);border-radius:2px;cursor:pointer;
   font-family:inherit;font-size:12.5px;letter-spacing:.12em;transition:all .2s}
 .toolbar button:hover{color:var(--gold-b);border-color:rgba(216,178,106,.6)}
-.toolbar select{padding:6px 10px;max-width:190px;
+.toolbar select{padding:6px 10px;max-width:280px;
   background:rgba(18,9,7,.7);color:rgba(240,229,204,.82);
   border:1px solid rgba(216,178,106,.22);border-radius:2px;
   font-family:inherit;font-size:12.5px;letter-spacing:.06em;outline:none;cursor:pointer}
 .toolbar select:hover{color:var(--gold-b);border-color:rgba(216,178,106,.6)}
-.model-pop{position:absolute;right:22px;bottom:56px;z-index:76;width:300px;display:none;
+.model-pop{position:absolute;right:22px;bottom:56px;z-index:76;width:340px;display:none;
   background:rgba(18,9,7,.94);color:rgba(240,229,204,.9);
   border:1px solid rgba(216,178,106,.4);border-radius:2px;padding:10px 12px 8px;
   box-shadow:0 10px 28px rgba(0,0,0,.45)}
@@ -426,13 +426,16 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
   background:rgba(0,0,0,.35);color:rgba(240,229,204,.92);
   border:1px solid rgba(216,178,106,.3);border-radius:2px;
   font-family:inherit;font-size:13px;outline:none}
+#modelPopHint{margin-top:8px}
+.toolbar button.model-x{padding:2px 8px;letter-spacing:0;font-size:16px;line-height:1}
 .model-pop-row{display:flex;gap:8px;margin-top:8px}
 .model-pop-err{min-height:1.2em;margin-top:6px;font-size:12px;line-height:1.4;color:#e7b2a8}
-.model-note{position:absolute;right:22px;bottom:56px;z-index:76;width:300px;display:none;
+.model-note{position:absolute;right:22px;bottom:56px;z-index:76;width:340px;display:none;
   background:rgba(18,9,7,.94);color:#e7b2a8;
   border:1px solid rgba(192,57,43,.55);border-radius:2px;padding:8px 10px;
   font-size:12.5px;line-height:1.45;box-shadow:0 10px 28px rgba(0,0,0,.45)}
 .model-note.on{display:block}
+.model-note.ok{color:var(--gold-b);border-color:rgba(216,178,106,.55)}
 
 /* 定妆模式：跳过过渡，直接看最终版式 */
 .pose-mode *{transition:none!important}
@@ -519,10 +522,12 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
       <div class="seal" id="seal">结案</div>
 
       <div class="model-pop" id="modelPop">
-        <div class="model-pop-q" id="modelPopQ">填写当前端点已有的模型 ID</div>
-        <input id="modelPopIn" placeholder="模型 ID" autocomplete="off" />
+        <div class="model-pop-q" id="modelPopQ">接入 API</div>
+        <input id="modelPopKey" type="password" placeholder="API Key" autocomplete="off" spellcheck="false" />
+        <input id="modelPopUrl" placeholder="接口地址" autocomplete="off" spellcheck="false" />
+        <div class="model-pop-q" id="modelPopHint">填 API Key。地址默认 DeepSeek，可以改成别的兼容地址。</div>
         <div class="model-pop-row">
-          <button type="button" id="modelPopOk">添加</button>
+          <button type="button" id="modelPopOk">接入</button>
           <button type="button" id="modelPopCancel">取消</button>
         </div>
         <div class="model-pop-err" id="modelPopErr"></div>
@@ -532,7 +537,7 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
       <div class="toolbar">
         <span class="live-tag" id="liveTag" style="display:none">真模型</span>
         <select id="modelSel" title="选择模型" style="display:none"></select>
-        <button type="button" id="modelDel" style="display:none">移除</button>
+        <button type="button" id="modelDel" class="model-x" style="display:none" title="删除已接入的 API" aria-label="删除已接入的 API">×</button>
         <button id="speedBtn">1×</button>
         <button id="resetBtn">再升一单</button>
       </div>
@@ -783,27 +788,43 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
   var LIVE_ORDER = null;
   var EXEC = null;
   var SELECTED_MODEL = '';
+  var SELECTED_PROFILE = '';
   /* 端点这次返回的名单。modelListOk 为假表示没取到，不能拿空名单去否决。 */
   var modelIds = [];
   var modelListOk = false;
+  var cloudLinks = [];
   /* 用户动过选择器之后，刷新名单不能再把选中项改回启动模型。 */
   var modelTouched = false;
   var modelLoadToken = 0;
+  var cloudKind = 'api';
+  var DEEPSEEK_BASE = 'https://api.deepseek.com/v1';
 
   /* ---------- 模型选择器 ---------- */
-  var EXTRA_MODELS_KEY = 'shengtang.extraModels';
-  function loadExtraModels(){
-    try{ return JSON.parse(localStorage.getItem(EXTRA_MODELS_KEY) || '[]'); }
-    catch(e){ return []; }
+  function parseModelValue(value){
+    if(!value || value === '__add__' || value === '__err__') return {profile:'', model:''};
+    var cut = value.indexOf('::');
+    if(cut < 0) return {profile:'', model:value};
+    return {profile: value.slice(0, cut), model: value.slice(cut + 2)};
   }
-  function saveExtraModels(list){
-    try{ localStorage.setItem(EXTRA_MODELS_KEY, JSON.stringify(list)); }catch(e){}
+  function modelValue(profile, model){
+    if(!model) return '';
+    if(profile === 'api' || profile === 'plan') return profile + '::' + model;
+    return 'local::' + model;
+  }
+  function applySelection(value){
+    var parsed = parseModelValue(value);
+    SELECTED_PROFILE = parsed.profile;
+    SELECTED_MODEL = parsed.model;
+    var sel = document.getElementById('modelSel');
+    if(sel) sel.title = SELECTED_MODEL || '选择模型';
+    syncModelDel();
   }
 
-  function showModelNote(text){
+  function showModelNote(text, ok){
     var note = document.getElementById('modelNote');
     if(!note) return;
     note.textContent = text;
+    note.classList.toggle('ok', !!ok);
     note.classList.add('on');
   }
   function clearModelNote(){
@@ -811,12 +832,12 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
     if(!note) return;
     note.textContent = '';
     note.classList.remove('on');
+    note.classList.remove('ok');
   }
   function syncModelDel(){
     var btn = document.getElementById('modelDel');
     if(!btn) return;
-    var extras = loadExtraModels();
-    btn.style.display = (SELECTED_MODEL && extras.indexOf(SELECTED_MODEL) >= 0) ? '' : 'none';
+    btn.style.display = cloudLinks.length ? '' : 'none';
   }
 
   /**
@@ -831,43 +852,55 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
     if(!LIVE){ sel.style.display = 'none'; return; }
     sel.style.display = '';
 
-    var fill = function(serverIds, current, listOk, errText){
+    var fill = function(serverIds, current, listOk, errText, clouds){
       if(token !== modelLoadToken) return;
       modelIds = serverIds.slice();
       modelListOk = listOk;
-      var extras = loadExtraModels();
-      var shown = serverIds.slice();
-      extras.forEach(function(id){
-        if(shown.indexOf(id) < 0) shown.push(id);
-      });
+      cloudLinks = clouds || [];
 
       var want;
       if(hasPreferred) want = preferred || '';
-      else if(modelTouched) want = SELECTED_MODEL;
-      else want = (current && serverIds.indexOf(current) >= 0) ? current : '';
+      else if(modelTouched) want = modelValue(SELECTED_PROFILE, SELECTED_MODEL);
+      else want = (current && serverIds.indexOf(current) >= 0) ? ('local::' + current) : '';
 
       sel.innerHTML = '';
 
+      var localGroup = document.createElement('optgroup');
+      localGroup.label = '本机';
       var def = document.createElement('option');
       def.value = ''; def.textContent = '跟随启动参数';
-      sel.appendChild(def);
+      localGroup.appendChild(def);
 
       if(errText){
         var e = document.createElement('option');
         e.value = '__err__'; e.textContent = errText; e.disabled = true;
-        sel.appendChild(e);
+        localGroup.appendChild(e);
       }
 
-      shown.forEach(function(id){
+      serverIds.forEach(function(id){
         var o = document.createElement('option');
-        var missing = listOk && serverIds.indexOf(id) < 0;
-        o.value = id;
-        o.textContent = missing ? (id + '（端点没有）') : id;
-        sel.appendChild(o);
+        o.value = 'local::' + id;
+        o.textContent = id;
+        localGroup.appendChild(o);
+      });
+      sel.appendChild(localGroup);
+
+      cloudLinks.forEach(function(link){
+        var models = link.models || [];
+        if(!models.length) return;
+        var group = document.createElement('optgroup');
+        group.label = link.label || link.id;
+        models.forEach(function(id){
+          var o = document.createElement('option');
+          o.value = link.id + '::' + id;
+          o.textContent = id;
+          group.appendChild(o);
+        });
+        sel.appendChild(group);
       });
 
       var add = document.createElement('option');
-      add.value = '__add__'; add.textContent = '＋ 添加模型…';
+      add.value = '__add__'; add.textContent = '＋ 接入 API…';
       sel.appendChild(add);
 
       var hasWant = false;
@@ -875,34 +908,28 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
         if(sel.options[i].value === want && !sel.options[i].disabled){ hasWant = true; break; }
       }
       sel.value = hasWant ? want : '';
-      SELECTED_MODEL = sel.value === '__add__' ? '' : sel.value;
-      syncModelDel();
+      applySelection(sel.value);
     };
 
     fetch('/api/models').then(function(r){ return r.json(); }).then(function(data){
       var ids = data.models || [];
       var listOk = !data.error;
       var errText = listOk ? (ids.length ? '' : '无可用模型') : '模型列表不可用';
-      fill(ids, data.current || '', listOk, errText);
+      fill(ids, data.current || '', listOk, errText, data.clouds || []);
     }).catch(function(){
-      fill([], '', false, '模型列表不可用');
+      fill([], '', false, '模型列表不可用', []);
     });
   }
 
   function openModelPop(){
     var pop = document.getElementById('modelPop');
-    var q = document.getElementById('modelPopQ');
-    var input = document.getElementById('modelPopIn');
+    var input = document.getElementById('modelPopKey');
+    var url = document.getElementById('modelPopUrl');
     var err = document.getElementById('modelPopErr');
     if(!pop || !input) return;
     clearModelNote();
-    if(modelListOk){
-      q.textContent = modelIds.length
-        ? ('当前端点有：' + modelIds.join('、') + '。已经在列表里的，填了会直接选中。')
-        : '当前端点没有可用模型。';
-    }else{
-      q.textContent = '模型名单没取到。可以先记下 ID，升堂时再向端点核对。';
-    }
+    cloudKind = 'api';
+    if(url && !url.value.trim()) url.value = DEEPSEEK_BASE;
     err.textContent = '';
     input.value = '';
     pop.classList.add('on');
@@ -910,33 +937,48 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
   }
   function closeModelPop(){
     var pop = document.getElementById('modelPop');
+    var input = document.getElementById('modelPopKey');
+    if(input) input.value = '';
     if(pop) pop.classList.remove('on');
   }
   function submitModelAdd(){
-    var input = document.getElementById('modelPopIn');
+    var input = document.getElementById('modelPopKey');
+    var url = document.getElementById('modelPopUrl');
     var err = document.getElementById('modelPopErr');
-    var id = (input.value || '').trim();
-    if(!id){ err.textContent = '请填写模型 ID'; return; }
-    if(id === '__add__' || id === '__err__'){ err.textContent = '这个名字不能用'; return; }
-    if(modelListOk && modelIds.indexOf(id) < 0){
-      var have = modelIds.length ? modelIds.join('、') : '（没有）';
-      err.textContent = '这个端点没有「' + id + '」。当前只有：' + have;
-      return;
-    }
-    var warn = '';
-    if(modelListOk){
-      /* 端点本来就有：只选中。若以前误存过同名，从本地名单里拿掉。 */
-      saveExtraModels(loadExtraModels().filter(function(x){ return x !== id; }));
-    }else{
-      var extras = loadExtraModels();
-      if(extras.indexOf(id) < 0){ extras.push(id); saveExtraModels(extras); }
-      warn = '名单没取到，这个名字还没核对。升堂时会再问一次端点。';
-    }
-    modelTouched = true;
-    SELECTED_MODEL = id;
-    closeModelPop();
-    loadModels(id);
-    if(warn) showModelNote(warn);
+    var ok = document.getElementById('modelPopOk');
+    var key = (input.value || '').trim();
+    if(!key){ err.textContent = '请填写 API Key'; return; }
+    err.textContent = '';
+    ok.disabled = true;
+    ok.textContent = '接入中';
+    fetch('/api/cloud', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        kind: cloudKind,
+        api_key: key,
+        base_url: url ? url.value.trim() : ''
+      })
+    }).then(function(r){
+      return r.json().then(function(data){ return {status: r.status, data: data}; });
+    }).then(function(res){
+      ok.disabled = false;
+      ok.textContent = '接入';
+      if(!res.data || !res.data.ok){
+        err.textContent = (res.data && res.data.error) || '没接上';
+        return;
+      }
+      var models = res.data.models || [];
+      var first = models[0] || '';
+      modelTouched = true;
+      closeModelPop();
+      loadModels(first ? (res.data.kind + '::' + first) : '');
+      showModelNote('已接入 ' + models.length + ' 个' + (res.data.label || '') + '模型', true);
+    }).catch(function(){
+      ok.disabled = false;
+      ok.textContent = '接入';
+      err.textContent = '连不上演出服务';
+    });
   }
 
   /** 调后端拆单，边收事件边回报。返回 {order} 或 {error}。 */
@@ -944,6 +986,9 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
     return new Promise(function(resolve){
       var url = '/api/order?requirement=' + encodeURIComponent(requirement);
       if(SELECTED_MODEL){ url += '&model=' + encodeURIComponent(SELECTED_MODEL); }
+      if(SELECTED_PROFILE === 'api' || SELECTED_PROFILE === 'plan'){
+        url += '&profile=' + encodeURIComponent(SELECTED_PROFILE);
+      }
       var es = new EventSource(url);
       var done = false;
 
@@ -970,7 +1015,12 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
     return fetch('/api/execute', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ order: order, requirement: requirement, model: SELECTED_MODEL || '' })
+      body: JSON.stringify({
+        order: order,
+        requirement: requirement,
+        model: SELECTED_MODEL || '',
+        profile: (SELECTED_PROFILE === 'api' || SELECTED_PROFILE === 'plan') ? SELECTED_PROFILE : ''
+      })
     }).then(function(res){
       if(!res.ok || !res.body){
         return res.text().then(function(t){ return { error: t || ('执行服务返回 ' + res.status) }; });
@@ -1184,8 +1234,15 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
       req.focus();
       return;
     }
-    if(LIVE && SELECTED_MODEL && modelListOk && modelIds.indexOf(SELECTED_MODEL) < 0){
-      showModelNote('端点没有模型「' + SELECTED_MODEL + '」。请换一个，或点「移除」。');
+    if(LIVE && (SELECTED_PROFILE === 'api' || SELECTED_PROFILE === 'plan')){
+      var cloud = null;
+      cloudLinks.forEach(function(item){ if(item.id === SELECTED_PROFILE) cloud = item; });
+      if(!cloud || !SELECTED_MODEL || (cloud.models || []).indexOf(SELECTED_MODEL) < 0){
+        showModelNote('这一路云端没有模型「' + (SELECTED_MODEL || '') + '」。请重接，或点 × 删除。');
+        return;
+      }
+    }else if(LIVE && SELECTED_MODEL && modelListOk && modelIds.indexOf(SELECTED_MODEL) < 0){
+      showModelNote('端点没有模型「' + SELECTED_MODEL + '」。请换一个。');
       return;
     }
     clearModelNote();
@@ -1613,30 +1670,49 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
   if(modelSelEl){
     modelSelEl.addEventListener('change', function(){
       if(this.value === '__add__'){
-        this.value = SELECTED_MODEL;
+        var back = modelValue(SELECTED_PROFILE, SELECTED_MODEL);
+        this.value = back;
         openModelPop();
         return;
       }
       modelTouched = true;
-      SELECTED_MODEL = this.value;
-      syncModelDel();
+      applySelection(this.value);
       clearModelNote();
     });
   }
   $('#modelPopOk').addEventListener('click', submitModelAdd);
   $('#modelPopCancel').addEventListener('click', closeModelPop);
-  $('#modelPopIn').addEventListener('keydown', function(e){
+  function onCloudKey(e){
     if(e.key === 'Enter'){ e.preventDefault(); submitModelAdd(); }
     if(e.key === 'Escape'){ e.preventDefault(); closeModelPop(); }
-  });
+  }
+  $('#modelPopKey').addEventListener('keydown', onCloudKey);
+  $('#modelPopUrl').addEventListener('keydown', onCloudKey);
   $('#modelDel').addEventListener('click', function(){
-    var id = SELECTED_MODEL;
-    if(!id) return;
-    saveExtraModels(loadExtraModels().filter(function(x){ return x !== id; }));
-    modelTouched = true;
-    SELECTED_MODEL = '';
-    clearModelNote();
-    loadModels('');
+    var kinds = cloudLinks.map(function(link){ return link.id; }).filter(Boolean);
+    if(!kinds.length) return;
+    var wasCloud = SELECTED_PROFILE === 'api' || SELECTED_PROFILE === 'plan';
+    var keep = wasCloud ? '' : modelValue(SELECTED_PROFILE, SELECTED_MODEL);
+    var chain = Promise.resolve();
+    kinds.forEach(function(kind){
+      chain = chain.then(function(){
+        return fetch('/api/cloud/forget', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({kind: kind})
+        });
+      });
+    });
+    chain.then(function(){
+      modelTouched = true;
+      if(wasCloud){
+        SELECTED_PROFILE = '';
+        SELECTED_MODEL = '';
+      }
+      clearModelNote();
+      closeModelPop();
+      loadModels(keep);
+    });
   });
 
   /* ---------- 真实模式标记 ---------- */

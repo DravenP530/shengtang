@@ -16,7 +16,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from orchestrator.llm import FastPathUnavailable  # noqa: E402
+from orchestrator.llm import FastPathUnavailable, LLMConfig  # noqa: E402
 from orchestrator.orchestrator import OrderRejected, Zhongtang, parse_question  # noqa: E402
 from orchestrator.schema import ParseError, parse_order, validate  # noqa: E402
 from orchestrator.execute import (  # noqa: E402
@@ -24,6 +24,17 @@ from orchestrator.execute import (  # noqa: E402
     choose_filename,
     execute_order,
     strip_model_text,
+)
+from stage.cloud import (  # noqa: E402
+    PLAN_BASE,
+    CloudError,
+    CloudLink,
+    config_for,
+    menu_view,
+    model_ids_from,
+    prepare_link,
+    remember,
+    load_links,
 )
 from stage.server import unknown_model_message  # noqa: E402
 
@@ -419,6 +430,78 @@ def test_strip_fence_and_choose_html_name():
     assert body.startswith("<!DOCTYPE html>")
     name = choose_filename("升日动画", body, set())
     assert name.endswith(".html")
+
+
+def test_plan_link_uses_token_plan_address():
+    """Token Plan 不听调用方传的地址，免得钥匙打到别的站。"""
+    kind, _label, base = prepare_link("plan", "sk-sp-abc", "https://evil.example/v1")
+    assert kind == "plan"
+    assert base == PLAN_BASE
+
+
+def test_plan_rejects_pay_as_you_go_key():
+    """按量的 sk- 不能塞进订阅这一路。"""
+    try:
+        prepare_link("plan", "sk-normal", None)
+    except CloudError as exc:
+        assert "sk-sp-" in str(exc)
+        return
+    raise AssertionError("应当拒绝")
+
+
+def test_api_defaults_to_deepseek_and_strips_suffix():
+    """地址空着走 DeepSeek；把聊天路径贴进来时剥掉末尾。"""
+    _kind, _label, base = prepare_link("api", "sk-xxx", "")
+    assert base == "https://api.deepseek.com/v1"
+    _kind, _label, base = prepare_link("api", "sk-xxx", "https://example.com/v1/chat/completions")
+    assert base == "https://example.com/v1"
+
+
+def test_api_rejects_non_http():
+    try:
+        prepare_link("api", "sk-xxx", "file:///etc/passwd")
+    except CloudError:
+        return
+    raise AssertionError("应当拒绝")
+
+
+def test_saved_key_stays_out_of_the_menu():
+    """钥匙落在本机文件里，给页面的名单里没有它。"""
+    import json
+    import tempfile
+
+    store = Path(tempfile.mkdtemp()) / "cloud.json"
+    remember(
+        CloudLink("api", "云端接口", "https://api.deepseek.com/v1", "sk-secret", ["deepseek-chat"]),
+        store,
+    )
+    menu = menu_view(load_links(store))
+    assert "sk-secret" not in json.dumps(menu)
+    assert menu[0]["models"] == ["deepseek-chat"]
+    assert load_links(store)["api"].api_key == "sk-secret"
+
+
+def test_cloud_config_points_at_that_key():
+    """选了云端模型，这一单改地址和钥匙，本机那份配置不动。"""
+    link = CloudLink("plan", "Token Plan", PLAN_BASE, "sk-sp-1", ["qwen3.6-plus"])
+    cfg = LLMConfig(
+        model="local-model",
+        base_url="http://127.0.0.1:8096/v1",
+        api_key="local",
+        reasoning="off",
+    )
+    got = config_for(cfg, link, "qwen3.6-plus")
+    assert got.model == "qwen3.6-plus"
+    assert got.fast_base_url == PLAN_BASE
+    assert got.fast_api_key == "sk-sp-1"
+    assert got.reasoning is None
+    assert cfg.api_key == "local"
+    assert cfg.model == "local-model"
+
+
+def test_parse_openai_model_list():
+    ids = model_ids_from({"data": [{"id": "a"}, {"id": ""}, {"id": "a"}, "nope", {"name": "b"}]})
+    assert ids == ["a"]
 
 
 # ---------------------------------------------------------------- 跑起来
