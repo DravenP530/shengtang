@@ -19,6 +19,7 @@ import argparse
 import json
 import os
 import sys
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -34,6 +35,21 @@ from orchestrator.orchestrator import OrderRejected, Zhongtang  # noqa: E402
 STAGE_FILE = Path(__file__).resolve().parent / "index.html"
 
 CONFIG = LLMConfig.from_env()
+
+#: 同一时间只允许一张单在拆。浏览器断开重连时 EventSource 会自动重发，
+#: 没有这道闸就会叠出好几个模型调用，把本地模型压死。
+_ORDER_LOCK = threading.Lock()
+
+
+class Server(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def handle_error(self, request, client_address):  # noqa: D102
+        exc = sys.exc_info()[1]
+        # 浏览器预连接后立刻断开是常态，不必刷一屏堆栈
+        if isinstance(exc, (ConnectionResetError, ConnectionAbortedError, BrokenPipeError)):
+            return
+        super().handle_error(request, client_address)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -75,7 +91,24 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
 
+        if path == "/favicon.ico":
+            self._send_bytes(b"", "image/x-icon", 204)
+            return
+
         self._send_bytes("not found".encode(), "text/plain; charset=utf-8", 404)
+
+    def do_HEAD(self) -> None:  # noqa: N802
+        """预览面板/健康检查会用 HEAD 探活。不实现的话返回 501，页面会被判成打不开。"""
+        path = urlparse(self.path).path
+        if path in ("/", "/index.html") and STAGE_FILE.exists():
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(STAGE_FILE.stat().st_size))
+            self.end_headers()
+            return
+        self.send_response(204)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     # ------------------------------------------------------------ 事件流
 
@@ -101,6 +134,11 @@ class Handler(BaseHTTPRequestHandler):
             emit({"type": "order/final", "error": "需求为空"})
             return
 
+        # 同一时间只拆一张单。EventSource 断线会自动重发，不挡就会叠出多个模型调用。
+        if not _ORDER_LOCK.acquire(blocking=False):
+            emit({"type": "order/final", "error": "已有单在拆，请稍候再点"})
+            return
+
         try:
             with LLM(CONFIG) as llm:
                 zt = Zhongtang(llm, max_attempts=3, on_event=emit, fast=True)
@@ -119,6 +157,8 @@ class Handler(BaseHTTPRequestHandler):
             )
         except Exception as exc:  # noqa: BLE001
             emit({"type": "order/final", "error": f"{type(exc).__name__}: {exc}"})
+        finally:
+            _ORDER_LOCK.release()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -141,7 +181,7 @@ def main(argv: list[str] | None = None) -> int:
         print("缺少模型地址：请加 --base-url 或设置 DEEPSEEK_BASE_URL", file=sys.stderr)
         return 2
 
-    server = ThreadingHTTPServer((args.host, args.port), Handler)
+    server = Server((args.host, args.port), Handler)
     print(f"[stage] 朝堂已开： http://{args.host}:{args.port}")
     print(f"[stage] 模型：{CONFIG.model}  ←  {CONFIG.resolved_fast_base_url()}")
     print("[stage] Ctrl+C 停止")
