@@ -1072,6 +1072,26 @@ def test_summary_does_not_duplicate_retry_note():
     assert len(out.undone) == 1
 
 
+def test_task_prompt_covers_report_and_two_piece_deliverables():
+    """交付物要「报告」或写着「A 及 B」两件，都得让它把附属件写进页面。
+
+    实测踩过两次：先漏「使用说明」，再漏「兼容性测试报告」。
+    """
+    from orchestrator.execute import task_prompt
+    from orchestrator.schema import Order
+
+    order = Order(goal="做动画", tasks=[])
+
+    p1 = task_prompt(order, "工部", "打包并测兼容性", "最终交付的HTML文件及兼容性测试报告")
+    assert "页面末尾加一节" in p1
+
+    p2 = task_prompt(order, "工部", "打包", "HTML 及 demo 链接")
+    assert "页面末尾加一节" in p2
+
+    p3 = task_prompt(order, "兵部", "做一页动画", "升日动画")
+    assert "不写注释、不写多余说明" in p3
+
+
 # ---------------------------------------------------------------- 跑起来
 
 

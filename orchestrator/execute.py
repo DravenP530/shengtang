@@ -187,9 +187,16 @@ def close_partial_html(body: str) -> tuple[str, bool]:
 
 def task_prompt(order: Order, dept: str, action: str, deliverable: str) -> str:
     visual = any(word in (action + deliverable) for word in ("动画", "页面", "原型", "demo", "HTML", "html"))
-    #: 交付物里要说明/步骤的，光让模型「不写说明」就永远交不出来（实测踩过）
-    wants_doc = any(
-        word in deliverable for word in ("说明", "步骤", "用法", "指南", "文档", "清单")
+    #: 交付物里要说明/步骤/报告的，光让模型「不写说明」就永远交不出来。
+    #: 实测踩过两次：先漏「使用说明」，再漏「兼容性测试报告」。
+    #: 所以两手：词表补全，并且只要交付物写了「A 及 B」两件，一律当成要附带说明。
+    multi = any(word in deliverable for word in ("及", "和", "、", "＋", "+"))
+    wants_doc = multi or any(
+        word in deliverable
+        for word in (
+            "说明", "步骤", "用法", "指南", "文档", "清单",
+            "报告", "结论", "测试", "方案", "记录", "验收",
+        )
     )
     if visual:
         shape = (
