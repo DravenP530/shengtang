@@ -195,6 +195,12 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
   background:rgba(216,178,106,.42)}
 .gavel.raise{animation:gavelUp .17s cubic-bezier(.3,0,.6,1) forwards}
 .gavel.slam{animation:gavelDown .13s cubic-bezier(.55,0,.9,1) forwards}
+/* 能不能点，得看得出来：待升堂和已结案时惊堂木会呼吸，议事中暗着 */
+.gavel.ready{animation:gavelBreath 3.4s ease-in-out infinite}
+@keyframes gavelBreath{
+  0%,100%{filter:drop-shadow(0 0 0 rgba(216,178,106,0))}
+  50%{filter:drop-shadow(0 0 8px rgba(216,178,106,.6))}
+}
 @keyframes gavelUp{to{transform:translateY(-44px) rotate(-17deg)}}
 @keyframes gavelDown{to{transform:translateY(0) rotate(-1deg)}}
 
@@ -328,16 +334,22 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
   width:22px;height:22px;background:#8c1f16;color:#f6e7c8;font-size:12.5px;
   border-radius:2px}
 .t-row .owner{color:#8c1f16;letter-spacing:.1em}
-.t-row .act{color:#33200f}
+.t-row .act{color:#33200f;min-width:0;overflow-wrap:anywhere}
 .t-row .out{color:rgba(60,38,26,.72);font-size:13px;text-align:right}
 .t-row .mark{text-align:center;color:#8c1f16;font-size:15px;opacity:0;transition:opacity .3s}
 .t-row.running{background:rgba(192,57,43,.10)}
 .t-row.running .mark{opacity:.5}
 .t-row.done .mark{opacity:1}
-.t-row.changed{background:rgba(192,57,43,.16)}
-.t-row.changed .act{text-decoration:line-through;opacity:.5}
+/* 改单：底色调浅红、字转深红，表示「这条改过」。
+   别用删除线——划掉的是改后的新内容，看着像这条作废了 */
+.t-row.changed{background:rgba(192,57,43,.16);outline:1px solid rgba(192,57,43,.26)}
+.t-row.changed .act{color:#8c1f16}
 .t-row.reject{background:rgba(192,57,43,.24);outline:1px solid rgba(140,31,22,.5)}
 .t-row.reject .mark{color:#8c1f16;opacity:1}
+/* 退回理由：跨整行落在条目下面。只给 ✗ 不说为什么，主公没法判断该不该认 */
+.t-row .why{grid-column:1/-1;margin:3px 0 0;font-size:12px;line-height:1.5;
+  color:#8c1f16;opacity:.9;letter-spacing:.02em}
+.t-row .why.ok{color:#4a7a3a}
 .sc-note{margin-top:9px;padding:7px 11px;background:rgba(192,57,43,.10);
   border-left:3px solid #8c1f16;font-size:13.5px;color:#6b2118;line-height:1.7;
   opacity:0;transition:opacity .35s;flex:none}
@@ -402,6 +414,13 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
 .asker-skip{background:none;border:none;cursor:pointer;padding:2px 4px;
   font-family:inherit;font-size:12px;color:rgba(60,38,26,.55);text-decoration:underline}
 .asker-skip:hover{color:#8c1f16}
+/* 有选项时只给按钮，不摆输入框——勘验后问主公「再补／结案／作废」是这种 */
+.asker-opts{display:none;gap:10px;margin-top:12px;flex:none}
+.asker-opt{padding:10px 22px;background:linear-gradient(158deg,#c0392b,#8a1d14);
+  color:var(--gold-b);border:1px solid rgba(192,57,43,.5);border-radius:2px;
+  font-family:"STKaiti","KaiTi",serif;font-size:19px;letter-spacing:.08em;
+  cursor:pointer;transition:transform .13s,background .13s}
+.asker-opt:hover{transform:translateY(-2px);background:linear-gradient(158deg,#d0483a,#9c231a)}
 
 /* ============ 工具条 ============ */
 .live-tag{padding:6px 12px;border:1px solid rgba(224,82,63,.55);border-radius:2px;
@@ -506,6 +525,7 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
 
       <div class="asker" id="asker">
         <div class="asker-q" id="askerQ"></div>
+        <div class="asker-opts" id="askerOpts"></div>
         <div class="asker-row">
           <textarea id="askerIn" placeholder="主公请作答……（Ctrl+Enter 回话）"></textarea>
           <button class="asker-send" id="askerSend">回话</button>
@@ -539,7 +559,6 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
         <select id="modelSel" title="选择模型" style="display:none"></select>
         <button type="button" id="modelDel" class="model-x" style="display:none" title="删除已接入的 API" aria-label="删除已接入的 API">×</button>
         <button id="speedBtn">1×</button>
-        <button id="resetBtn">再升一单</button>
       </div>
 
     </div>
@@ -588,6 +607,11 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
       el.classList.toggle('active', n === i);
       el.classList.toggle('done', n < i);
     });
+    /* 惊堂木亮着就是能点：待升堂＝升堂，已结案＝退堂再来一单 */
+    if(gavel){
+      gavel.classList.toggle('ready', i === 0 || i === 7);
+      gavel.title = i === 0 ? '击木升堂' : (i === 7 ? '击木退堂，再议一单' : '议事未毕');
+    }
   }
   buildHud();
   setPhase(0);
@@ -752,8 +776,48 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
     o2.connect(g3); g3.connect(c.destination);
     o2.start(t + 0.015); o2.stop(t + 0.58);
   }
-  function sfxSeal(){
+  /** 退堂：木头砸下之后拖一声低沉的余韵，跟升堂那记干脆的撞击分开。
+      同一块木头，砸下去是「起」，再砸一下是「收」——声音得听得出区别。 */
+  function sfxRecess(){
     var c = null;
+    try{ c = ac(); }catch(e){ return; }
+    if(!c) return;
+    var t = c.currentTime;
+
+    /* 木击，比升堂闷一点 */
+    var len = Math.floor(c.sampleRate * 0.16);
+    var buf = c.createBuffer(1, len, c.sampleRate);
+    var d = buf.getChannelData(0);
+    for(var i=0;i<len;i++){ var p = i/len; d[i] = (Math.random()*2-1) * Math.pow(1-p, 4); }
+    var src = c.createBufferSource(); src.buffer = buf;
+    var bp = c.createBiquadFilter(); bp.type = 'bandpass';
+    bp.frequency.value = 620; bp.Q.value = 0.9;
+    var g = c.createGain(); g.gain.value = 0.42;
+    src.connect(bp); bp.connect(g); g.connect(c.destination);
+    src.start(t);
+
+    /* 低沉的余韵，长尾 */
+    var o = c.createOscillator(); o.type = 'sine';
+    o.frequency.setValueAtTime(78, t);
+    o.frequency.exponentialRampToValueAtTime(38, t + 1.1);
+    var g2 = c.createGain();
+    g2.gain.setValueAtTime(0.0001, t);
+    g2.gain.exponentialRampToValueAtTime(0.30, t + 0.04);
+    g2.gain.exponentialRampToValueAtTime(0.001, t + 1.3);
+    o.connect(g2); g2.connect(c.destination);
+    o.start(t); o.stop(t + 1.35);
+
+    /* 一层更闷的垫音，做出堂上回声 */
+    var o2 = c.createOscillator(); o2.type = 'triangle';
+    o2.frequency.setValueAtTime(52, t);
+    var g3 = c.createGain();
+    g3.gain.setValueAtTime(0.10, t + 0.05);
+    g3.gain.exponentialRampToValueAtTime(0.001, t + 1.6);
+    o2.connect(g3); g3.connect(c.destination);
+    o2.start(t + 0.05); o2.stop(t + 1.65);
+  }
+
+  function sfxSeal(){    var c = null;
     try{ c = ac(); }catch(e){ return; }
     if(!c) return;
     var t = c.currentTime;
@@ -779,13 +843,16 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
   /* ============================================================
      真实模式
      ------------------------------------------------------------
-     由 stage/server.py 托管时（http 协议），拆单走真模型；
-     直接双击打开（file 协议）时，用上面写死的 TASKS 演一遍。
-     两种模式下附议、勘验、汇总仍是演示逻辑——那几态还没实现。
+     由 stage/server.py 托管时（http 协议）：
+       拆单 → 附议 → 执行 → 勘验 → 汇总，五段都走真模型。
+     直接双击打开（file 协议）时，用上面写死的 TASKS 演一遍，
+     附议的异议、勘验的退回、汇总的文案都是演的。
      ============================================================ */
   var LIVE = location.protocol === 'http:' || location.protocol === 'https:';
   var LIVE_TASKS = null;
   var LIVE_ORDER = null;
+  /* 附议结果：结果卷轴要如实标注「有没有谈拢」 */
+  var ATTEST = null;
   var EXEC = null;
   var SELECTED_MODEL = '';
   var SELECTED_PROFILE = '';
@@ -1010,20 +1077,15 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
     });
   }
 
-  /** 附议定了之后，等各司把文件写进案卷。 */
-  function fetchExecute(order, requirement, onEvent){
-    return fetch('/api/execute', {
+  /** POST 一条 SSE 流，边收边报。收满 finalType 那条事件就作为结果返回。 */
+  function postStream(path, body, finalType, onEvent){
+    return fetch(path, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        order: order,
-        requirement: requirement,
-        model: SELECTED_MODEL || '',
-        profile: (SELECTED_PROFILE === 'api' || SELECTED_PROFILE === 'plan') ? SELECTED_PROFILE : ''
-      })
+      body: JSON.stringify(body)
     }).then(function(res){
       if(!res.ok || !res.body){
-        return res.text().then(function(t){ return { error: t || ('执行服务返回 ' + res.status) }; });
+        return res.text().then(function(t){ return { error: t || ('服务返回 ' + res.status) }; });
       }
       var reader = res.body.getReader();
       var dec = new TextDecoder();
@@ -1035,14 +1097,14 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
           var data;
           try { data = JSON.parse(line.slice(5).trim()); } catch(e){ return; }
           if(onEvent) onEvent(data);
-          if(data.type === 'execute/final') last = data;
+          if(data.type === finalType) last = data;
         });
       }
       function pump(){
         return reader.read().then(function(r){
           if(r.done){
             if(buf) take(buf);
-            return last || { error: '执行没有回音' };
+            return last || { error: '没有回音' };
           }
           buf += dec.decode(r.value, {stream: true});
           var parts = buf.split('\n\n');
@@ -1057,7 +1119,53 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
     });
   }
 
+  /** 每一单都要带上的模型选择。 */
+  function liveBody(){
+    return {
+      model: SELECTED_MODEL || '',
+      profile: (SELECTED_PROFILE === 'api' || SELECTED_PROFILE === 'plan') ? SELECTED_PROFILE : ''
+    };
+  }
+
+  /** 附议定了之后，等各司把文件写进案卷。attest 是附议结果，汇总要用。 */
+  function fetchExecute(order, requirement, attest, onEvent){
+    var body = liveBody();
+    body.order = order;
+    body.requirement = requirement;
+    if(attest) body.attest = attest;
+    return postStream('/api/execute', body, 'execute/final', onEvent);
+  }
+
+  /** 六司真表态。返回 {order, passed, escalate}——order 是改过之后的单子。 */
+  function fetchAttest(order, onEvent){
+    var body = liveBody();
+    body.order = order;
+    return postStream('/api/attest', body, 'attest/final', onEvent);
+  }
+
   var orderNo = '';
+
+  /** 模型给的字直接进 innerHTML 会破版式，一律先转义。 */
+  function esc(text){
+    return String(text == null ? '' : text)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  /**
+   * 改单必须同时写回单子本身。
+   * 只改 DOM 不改 LIVE_ORDER，执行时发出去还是原单——画面上写着「拆为两期」，
+   * 实际做的还是原来那条，等于朝堂在骗主公。
+   */
+  function amendOrder(index, act, out){
+    if(LIVE_ORDER && LIVE_ORDER['任务'] && LIVE_ORDER['任务'][index]){
+      LIVE_ORDER['任务'][index]['做什么'] = act;
+      LIVE_ORDER['任务'][index]['交付物'] = out;
+    }
+    if(LIVE_TASKS && LIVE_TASKS[index]){
+      LIVE_TASKS[index].act = act;
+      LIVE_TASKS[index].out = out;
+    }
+  }
 
   /** 数一数这一单用到了几个不同的司（用于约束行）。 */
   function distinctDepts(list){
@@ -1080,7 +1188,7 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
       '</div>';
     }).join('');
     return '<div class="sc-head">' +
-        '<span class="sc-title">升 堂 单</span>' +
+        '<span class="sc-title">卷 宗</span>' +
         '<span class="sc-no">编号 ' + orderNo + '</span>' +
       '</div>' +
       '<div class="sc-meta">' +
@@ -1096,9 +1204,14 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
 
   function resultHTML(){
     var list = LIVE_TASKS || TASKS;
+    /* 交付清单的勾要用**勘验结果**定，不能用执行结果。
+       执行只说明「交上来了」，勘验才说明「这东西算不算交了这活」。
+       用错了会出现「清单打勾、勘验却说有退回」的自相矛盾。 */
+    var verdicts = (EXEC && EXEC.inspection && EXEC.inspection.verdicts) || null;
     var rows = list.map(function(t, i){
       var mark = '✓';
-      if(EXEC && EXEC.checks && EXEC.checks[i] && !EXEC.checks[i].ok) mark = '✗';
+      if(verdicts && verdicts[i]) mark = verdicts[i].ok ? '✓' : '✗';
+      else if(EXEC && EXEC.checks && EXEC.checks[i] && !EXEC.checks[i].ok) mark = '✗';
       return '<div class="d-row">' +
         '<span class="d-ck">' + mark + '</span>' +
         '<span class="d-no">' + t.id + '</span>' +
@@ -1109,19 +1222,55 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
     var execLine;
     var checkLine;
     var nextLine;
-    if(EXEC && EXEC.productPath){
-      var passed = (EXEC.checks || []).filter(function(c){ return c.ok; }).length;
-      var total = (EXEC.checks || []).length;
+    if(EXEC && EXEC.inspection){
+      var insp2 = EXEC.inspection;
+      var vs = insp2.verdicts || [];
+      var okCount = vs.filter(function(v){ return v.ok; }).length;
+      var retriedOk = vs.filter(function(v){ return v.retried && v.ok; }).length;
       var pathText = String(EXEC.productPath).replace(/&/g, '&amp;').replace(/</g, '&lt;');
       var caseText = String(EXEC.caseDir || '').replace(/&/g, '&amp;').replace(/</g, '&lt;');
       execLine = '<p><b>成品</b><a href="' + EXEC.productUrl + '" target="_blank">' + pathText + '</a></p>';
-      checkLine = '<p><b>勘验</b>刑部只核文件：' + passed + ' / ' + total + ' 项落盘' + (EXEC.ok ? '，全过' : '，有退回') + '</p>';
+      checkLine = '<p><b>勘验</b>刑部逐条核内容：' + okCount + ' / ' + vs.length + ' 项通过'
+        + (retriedOk ? '，其中 ' + retriedOk + ' 项补交后通过' : '')
+        + (insp2.passed ? '，全过' : '，有退回') + '</p>';
       nextLine = '<p><b>案卷</b>' + caseText + '</p>';
+    }else if(EXEC && EXEC.productPath){
+      var passed = (EXEC.checks || []).filter(function(c){ return c.ok; }).length;
+      var total = (EXEC.checks || []).length;
+      var pathText2 = String(EXEC.productPath).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+      var caseText2 = String(EXEC.caseDir || '').replace(/&/g, '&amp;').replace(/</g, '&lt;');
+      execLine = '<p><b>成品</b><a href="' + EXEC.productUrl + '" target="_blank">' + pathText2 + '</a></p>';
+      checkLine = '<p><b>勘验</b>刑部只核文件：' + passed + ' / ' + total + ' 项落盘' + (EXEC.ok ? '，全过' : '，有退回') + '</p>';
+      nextLine = '<p><b>案卷</b>' + caseText2 + '</p>';
     }else{
       var fixNo = Math.min(4, list.length);
       execLine = '<p><b>执行</b>演示逻辑，没有写出文件</p>';
       checkLine = '<p><b>勘验</b>演示逻辑：' + list.length + ' 项全过，其中第 ' + fixNo + ' 项经补证后通过</p>';
       nextLine = '<p><b>待批</b>下一场若走真模型，文件会进案卷夹。</p>';
+    }
+    var attestLine = '';
+    if(ATTEST){
+      var rounds = ATTEST.rounds || 1;
+      var dissents = (ATTEST.stances || []).filter(function(s){ return s.verdict === '异议'; }).length;
+      if(ATTEST.escalate){
+        attestLine = '<p><b>附议</b>' + rounds + ' 轮未达成共识（' + dissents + ' 处异议），已按最后一版单子执行，请主公追认</p>';
+      }else if(ATTEST.amendments && ATTEST.amendments.length){
+        attestLine = '<p><b>附议</b>' + rounds + ' 轮达成共识，依异议改单 ' + ATTEST.amendments.length + ' 处</p>';
+      }else{
+        attestLine = '<p><b>附议</b>' + rounds + ' 轮全附议，无改单</p>';
+      }
+    }
+    var summaryLine = '';
+    if(EXEC && EXEC.summary){
+      var sm = EXEC.summary;
+      if(sm.verdict) summaryLine += '<p><b>结语</b>' + esc(sm.verdict) + '</p>';
+      if(sm.risks && sm.risks.length){
+        summaryLine += '<p><b>风险</b>' + sm.risks.map(esc).join('；') + '</p>';
+      }
+      if(sm.undone && sm.undone.length){
+        summaryLine += '<p><b>未做</b>' + sm.undone.map(esc).join('；') + '</p>';
+      }
+      if(sm.path) summaryLine += '<p><b>结案</b>' + esc(sm.path) + '</p>';
     }
     return '<div class="sc-head">' +
         '<span class="sc-title">升 堂 结 果</span>' +
@@ -1129,12 +1278,14 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
       '</div>' +
       '<div class="sc-meta">' +
         '<p><b>拆单</b>已达成（' + list.length + ' 条任务' + (LIVE ? '，真模型生成' : '') + '）</p>' +
+        attestLine +
+        summaryLine +
         execLine + checkLine + nextLine +
       '</div>' +
       '<div class="sc-deliver">' +
         '<div class="d-title">交 付 清 单</div>' + rows +
       '</div>' +
-      '<div class="sc-foot static">主公请裁：定稿 ／ 退回（写明改哪几条）／ 否决</div>';
+      '<div class="sc-foot static">主公请裁：定稿 ／ 退回（改一句需求重下一单）／ 否决</div>';
   }
 
   async function openScroll(html, hold){
@@ -1218,11 +1369,91 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
 
   /* ---------- 主流程 ---------- */
   var busy = false;
+  /* 上一单的需求。主公点「退回」时要把它放回奏折，让他改一句重下。 */
+  var lastRequirement = '';
 
   function newOrderNo(){
     var d = new Date();
     var p = function(n){ return (n < 10 ? '0' : '') + n; };
     return '' + d.getFullYear() + p(d.getMonth()+1) + p(d.getDate()) + '-01';
+  }
+
+  /**
+   * 退堂：一场议事完了，清场再来。
+   *
+   * 惊堂木第二次落下，语义从「起」变成「收」——所以声音更沉、余韵更长。
+   * 不刷新页面：刷新会把升堂簿一起带走，而且白屏一下很难看。
+   */
+  async function recess(){
+    if(busy) return;
+    busy = true;
+    verdict.classList.remove('show');
+    askHide();
+    hideBubble(ztBubble);
+
+    /* 1 惊堂木再落一次 */
+    gavel.classList.remove('slam');
+    void gavel.offsetWidth;
+    gavel.classList.add('raise');
+    await wait(170);
+    gavel.classList.remove('raise');
+    gavel.classList.add('slam');
+    sfxRecess();
+    stage.classList.add('shake');
+    setTimeout(function(){ stage.classList.remove('shake'); }, 520 / speed);
+    setPhase(0);
+    await wait(260);
+
+    /* 2 中堂压场，六司应一声「喏」 */
+    zhongtang.classList.remove('aside');
+    zhongtang.classList.add('stand');
+    say(ztBubble, '肃静——');
+    await wait(820);
+    MEMBERS.forEach(function(m, i){
+      setTimeout(function(){ shout(m, '喏'); }, i * 58 / speed);
+    });
+    await wait(1000);
+    hideBubble(ztBubble);
+
+    /* 3 灯从外向内灭——跟升堂时由内向外点亮正好反过来 */
+    var OUT = ['礼部', '吏部', '工部', '户部', '刑部', '兵部'];
+    for(var i=0;i<OUT.length;i++){
+      var who = byName(OUT[i]);
+      if(who){
+        who.el.classList.remove('lit');
+        setState(who, 'idle');
+        hideBubble(who.bubble);
+      }
+      await wait(90);
+    }
+    await wait(240);
+
+    /* 4 收卷 */
+    await closeScroll(true);
+
+    /* 5 清场。不刷新就得手动抹干净——漏一样，下一场就带着上一场的残留 */
+    EXEC = null;
+    ATTEST = null;
+    LIVE_ORDER = null;
+    LIVE_TASKS = null;
+    book = [];
+    bookAt = 0;
+    bookReady = false;
+    renderLeaf();
+    seal.classList.remove('stamp');
+    orderNo = '';
+    /* 中堂也退回侧廊，下一场才好重新入场 */
+    zhongtang.classList.remove('enter', 'stand', 'aside');
+    resetStates();
+    setPhase(0);
+
+    /* 6 摊开奏折。上次的需求留着，全选方便改一句重下 */
+    if(!req.value && lastRequirement) req.value = lastRequirement;
+    composer.classList.remove('fold');
+    send.disabled = false;
+    busy = false;
+    req.focus();
+    req.select();
   }
 
   async function startCourt(){
@@ -1249,14 +1480,18 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
     if(busy) return;
     busy = true;
     send.disabled = true;
+    lastRequirement = text;
     orderNo = newOrderNo();
     resetStates();
+    ATTEST = null;
 
     /* 0 收起奏折 */
     composer.classList.add('fold');
     await wait(180);
 
     /* 1 惊堂木：抬 → 落 → 震 */
+    gavel.classList.remove('slam');
+    void gavel.offsetWidth;   /* 让动画能重放，否则第二次升堂木头不动 */
     gavel.classList.add('raise');
     await wait(170);
     gavel.classList.remove('raise');
@@ -1269,24 +1504,27 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
     setPhase(1);
     await wait(230);
 
-    /* 2 六席依次亮灯 */
+    /* 2 中堂入场，先压场：「肃静」。这时灯还没点，众人还没出声 */
+    zhongtang.classList.add('enter');
+    await wait(1050);
+    zhongtang.classList.add('stand');
+    await wait(120);
+    say(ztBubble, '肃静——');
+    await wait(1100);
+    hideBubble(ztBubble);
+
+    /* 3 六席依次亮灯 */
     for(var i=0;i<MEMBERS.length;i++){
       MEMBERS[i].el.classList.add('lit');
       await wait(85);
     }
     await wait(120);
 
-    /* 3 齐呼「升堂」 */
+    /* 4 齐呼「升堂」 */
     MEMBERS.forEach(function(m, i){
       setTimeout(function(){ shout(m, '升堂'); }, i * 78 / speed);
     });
     await wait(1150);
-
-    /* 4 中堂入场 */
-    zhongtang.classList.add('enter');
-    await wait(1150);
-    zhongtang.classList.add('stand');
-    await wait(120);
 
     say(ztBubble, '禀主公，此单臣已过目。');
     await wait(1350);
@@ -1344,54 +1582,146 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
     await wait(700);
     rememberPage('升堂单');
 
-    /* 6 附议第一轮：各司只说自己的一句。刑部不表态。 */
+    /* 6 附议：真模式下六司真表态、有异议真改单；演示模式仍按写死的节拍演一遍 */
     setPhase(2);
-    var dissent = byName('兵部');
-    for(var j=0;j<MEMBERS.length;j++){
-      var m = MEMBERS[j];
-      setState(m, 'thinking', '思忖');
-      await wait(230);
-      if(!m.line){ setState(m, 'idle'); continue; }
-      if(m === dissent){ shout(m, m.line, true); setState(m, 'blocked', '异议'); }
-      else { shout(m, m.line); setState(m, 'done', m.line); }
-    }
-    await wait(700);
-
-    /* 7 中堂处理异议。单子条数由模型定（2–5 条），「第 4 条」不能写死 */
     var fixIdx = Math.min(3, rows.length - 1);
-    var r4 = rows[fixIdx] || null;
-    say(ztBubble, '兵部说得是。第 ' + (fixIdx + 1) + ' 条工期不足，拆为两期：先出静态场景，再上动效。');
-    if(r4){
-      r4.classList.add('changed');
-      var actEl = r4.querySelector('.act');
-      var outEl = r4.querySelector('.out');
-      if(actEl) actEl.textContent = '做可视化原型（一期静态场景）';
-      if(outEl) outEl.textContent = '→ 可运行 demo';
-    }
-    var note = scrollInner.querySelector('#scNote');
-    if(note){
-      note.textContent = '改单记录：第 ' + (fixIdx + 1) + ' 条由「场景与动效」拆为两期，一期只做静态场景。依据：兵部异议。';
-      note.classList.add('show');
-    }
-    rememberPage('改后');
-    await wait(2100);
-    setState(dissent, 'done', '已改单');
-    hideBubble(ztBubble);
-    await wait(400);
+    var amendNote = [];
 
-    /* 8 附议第二轮：异议已改，兵部改口。刑部仍不说话。 */
-    MEMBERS.forEach(function(m, i){
-      if(!m.line) return;
-      var text = m.line2 || m.line;
-      setTimeout(function(){
-        shout(m, text, false);
-        setState(m, 'done', text);
-      }, i * 70 / speed);
-    });
-    await wait(900);
-    say(ztBubble, '清单已定，开始执行。');
-    await wait(1100);
-    hideBubble(ztBubble);
+    if(LIVE && LIVE_ORDER){
+      say(ztBubble, '臣请六司表态。');
+      var attested = await fetchAttest(LIVE_ORDER, function(ev){
+        var who = ev.dept ? byName(ev.dept) : null;
+
+        if(ev.type === 'attest/round'){
+          if(ev.round > 1) say(ztBubble, '第 ' + ev.round + ' 轮附议。');
+        }else if(ev.type === 'attest/thinking'){
+          if(who) setState(who, 'thinking', '思忖');
+        }else if(ev.type === 'attest/stance'){
+          if(!who) return;
+          if(ev.verdict === '异议'){
+            shout(who, '异议', true);
+            setState(who, 'blocked', '异议');
+            say(ztBubble, ev.dept + '有异议：' + (ev.reason || '这一条办不了'));
+          }else{
+            shout(who, '附议');
+            setState(who, 'done', '附议');
+          }
+        }else if(ev.type === 'attest/amended'){
+          /* 中堂真改单：屏幕和单子一起改，缺一样都是骗人 */
+          say(ztBubble, (ev.by || '中堂') + '说得是。第 ' + (ev.index + 1) + ' 条改为「' + ev.action + '」。');
+          var row = rows[ev.index];
+          if(row){
+            row.classList.add('changed');
+            var actEl = row.querySelector('.act');
+            var outEl = row.querySelector('.out');
+            if(actEl) actEl.textContent = ev.action;
+            if(outEl) outEl.textContent = '→ ' + ev.deliverable;
+          }
+          amendOrder(ev.index, ev.action, ev.deliverable);
+          amendNote.push('第 ' + (ev.index + 1) + ' 条依「' + ev.by + '」异议改为：' + ev.action);
+          if(who) setState(who, 'done', '已改单');
+        }else if(ev.type === 'attest/skip'){
+          if(who) setState(who, 'idle', '未表态');
+        }
+      });
+
+      if(attested && attested.error){
+        say(ztBubble, '附议没走完——' + attested.error + '　按当前单子往下走。');
+        await wait(1200);
+      }else if(attested){
+        if(attested.order) LIVE_ORDER = attested.order;
+        if(attested.order && attested.order['任务']){
+          LIVE_TASKS = attested.order['任务'].map(function(t, i){
+            return { id: i + 1, owner: t['司'], act: t['做什么'], out: t['交付物'] };
+          });
+        }
+        ATTEST = attested;
+        if(amendNote.length){
+          var note = scrollInner.querySelector('#scNote');
+          if(note){
+            note.textContent = '改单记录：' + amendNote.join('；');
+            note.classList.add('show');
+          }
+          rememberPage('改后');
+        }
+        if(attested.escalate){
+          say(ztBubble, '两轮没谈拢，臣不敢擅专。先按最后一版办，请主公事后追认。');
+          await wait(1600);
+        }
+      }
+      hideBubble(ztBubble);
+      await wait(300);
+
+      /* 开工前请主公过目。执行是最贵的一步（几十秒 + 写文件）——
+         先让主公看定稿的单子，免得跑完才发现方向不对。 */
+      say(ztBubble, '附议已定，请主公过目。');
+      var goAhead = await askRoyal(
+        '附议已定。主公准了臣就开工；要改就退回重下一单。',
+        [{ label: '准了，开工', value: 'go' }, { label: '退回重拆', value: 'back' }]
+      );
+      if(goAhead !== 'go'){
+        setPhase(0);
+        await closeScroll(true);
+        req.value = lastRequirement;
+        composer.classList.remove('fold');
+        send.disabled = false;
+        busy = false;
+        say(ztBubble, '臣把这单退回。请主公改一句需求，臣重下一单。');
+        req.focus();
+        return;
+      }
+      say(ztBubble, '臣领旨，开工。');
+      await wait(600);
+    }else{
+      var dissent = byName('兵部');
+      for(var j=0;j<MEMBERS.length;j++){
+        var m = MEMBERS[j];
+        setState(m, 'thinking', '思忖');
+        await wait(230);
+        if(!m.line){ setState(m, 'idle'); continue; }
+        if(m === dissent){ shout(m, m.line, true); setState(m, 'blocked', '异议'); }
+        else { shout(m, m.line); setState(m, 'done', m.line); }
+      }
+      await wait(700);
+
+      /* 中堂处理异议。单子条数由模型定（2–5 条），「第 4 条」不能写死 */
+      var r4 = rows[fixIdx] || null;
+      var NEW_ACT = '做可视化原型（一期静态场景）';
+      var NEW_OUT = '可运行 demo';
+      say(ztBubble, '兵部说得是。第 ' + (fixIdx + 1) + ' 条工期不足，拆为两期：先出静态场景，再上动效。');
+      if(r4){
+        r4.classList.add('changed');
+        var actEl2 = r4.querySelector('.act');
+        var outEl2 = r4.querySelector('.out');
+        if(actEl2) actEl2.textContent = NEW_ACT;
+        if(outEl2) outEl2.textContent = '→ ' + NEW_OUT;
+      }
+      amendOrder(fixIdx, NEW_ACT, NEW_OUT);
+      var note2 = scrollInner.querySelector('#scNote');
+      if(note2){
+        note2.textContent = '改单记录：第 ' + (fixIdx + 1) + ' 条由「场景与动效」拆为两期，一期只做静态场景。依据：兵部异议。';
+        note2.classList.add('show');
+      }
+      rememberPage('改后');
+      await wait(2100);
+      setState(dissent, 'done', '已改单');
+      hideBubble(ztBubble);
+      await wait(400);
+
+      /* 附议第二轮：异议已改，兵部改口。刑部仍不说话。 */
+      MEMBERS.forEach(function(mm, i){
+        if(!mm.line) return;
+        var text = mm.line2 || mm.line;
+        setTimeout(function(){
+          shout(mm, text, false);
+          setState(mm, 'done', text);
+        }, i * 70 / speed);
+      });
+      await wait(900);
+      say(ztBubble, '清单已定，开始执行。');
+      await wait(1100);
+      hideBubble(ztBubble);
+    }
 
     /* 9 执行：等人写文件时，六司和中堂各自随机开口，可以同时说 */
     setPhase(3);
@@ -1432,7 +1762,7 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
     if(LIVE && LIVE_ORDER){
       say(ztBubble, '各司动身，写入案卷。');
       startWorkTalk();
-      var execResult = await fetchExecute(LIVE_ORDER, text, function(ev){
+      var execResult = await fetchExecute(LIVE_ORDER, text, ATTEST, function(ev){
         if(ev.orderNo){
           orderNo = ev.orderNo;
           var noEl = scrollInner.querySelector('.sc-no');
@@ -1451,11 +1781,119 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
             var mark = row.querySelector('.mark');
             if(mark) mark.textContent = ev.ok ? '✓' : '✗';
           }
+        }else if(ev.type === 'verify/start'){
+          /* 勘验开始：五司退开，只留刑部在场 */
+          stopWorkTalk();
+          setPhase(4);
+          MEMBERS.forEach(function(mm){ if(mm.name !== '刑部') mm.el.classList.add('dim'); });
+          var xing = byName('刑部');
+          if(xing){ xing.el.classList.add('lit'); setState(xing, 'thinking', '勘验'); }
+          say(ztBubble, '刑部核证，其余各司退开。');
+        }else if(ev.type === 'verify/verdict'){
+          var judge = byName('刑部');
+          /* 补交过的这一司核完就退回暗处——不能让它一直亮着 */
+          if(ev.retried && ev.dept && ev.dept !== '刑部'){
+            var fixed = byName(ev.dept);
+            if(fixed){
+              fixed.el.classList.remove('lit');
+              fixed.el.classList.add('dim');
+              setState(fixed, ev.ok ? 'done' : 'blocked', ev.ok ? '已补' : '仍未成');
+            }
+          }
+          if(ev.ok){
+            if(judge) shout(judge, ev.retried ? '补核过' : '核');
+            if(row){
+              row.classList.remove('running');
+              row.classList.remove('reject');
+              row.classList.add('done');
+              var okMark = row.querySelector('.mark');
+              if(okMark) okMark.textContent = '✓';
+              var okWhy = row.querySelector('.why');
+              if(okWhy){
+                if(ev.retried){ okWhy.textContent = '补交后核过'; okWhy.classList.add('ok'); }
+                else { okWhy.remove(); }
+              }
+            }
+          }else{
+            if(judge) shout(judge, '退', true);
+            if(row){
+              row.classList.remove('running');
+              row.classList.add('reject');
+              var noMark = row.querySelector('.mark');
+              if(noMark) noMark.textContent = '✗';
+              /* 理由要留在单子上——只打个 ✗，主公不知道凭什么退 */
+              if(ev.reason){
+                var why = row.querySelector('.why');
+                if(!why){
+                  why = document.createElement('div');
+                  why.className = 'why';
+                  row.appendChild(why);
+                }
+                why.classList.remove('ok');
+                why.textContent = '刑部退回：' + ev.reason;
+              }
+            }
+            say(ztBubble, '第 ' + (ev.index + 1) + ' 条退回：' + (ev.reason || '证据不足'));
+          }
+        }else if(ev.type === 'verify/retry'){
+          /* 补交这一拍不能空着：被退回的司要重新亮起来、出声、动手 */
+          var back = byName(ev.dept);
+          say(ztBubble, (ev.dept || '该司') + '补交第 ' + (ev.index + 1) + ' 条。');
+          if(back){
+            back.el.classList.remove('dim');
+            back.el.classList.add('lit');
+            setState(back, 'thinking', '补交');
+            shout(back, '臣这就补', false);
+          }
+          if(row){
+            row.classList.remove('reject');
+            row.classList.add('running');
+          }
+        }else if(ev.type === 'verify/retry-failed'){
+          var stuck = byName(ev.dept);
+          if(stuck){
+            stuck.el.classList.remove('lit');
+            stuck.el.classList.add('dim');
+            setState(stuck, 'blocked', '未成');
+          }
+          if(row) row.classList.remove('running');
+          say(ztBubble, '第 ' + (ev.index + 1) + ' 条补交不成——' + (ev.reason || '没交回来'));
+        }else if(ev.type === 'verify/question'){
+          /* 勘验有退回：停下来问主公怎么处置，不能替他决定「半成品也收」 */
+          say(ztBubble, ev.question);
+          askShow(ev.sid, ev.question, ev.options, 'verify');
+        }else if(ev.type === 'verify/round2'){
+          askHide();
+          MEMBERS.forEach(function(mm){ if(mm.name !== '刑部') mm.el.classList.add('dim'); });
+          say(ztBubble, '臣令各司再补一轮。');
+        }else if(ev.type === 'summary/start'){
+          setPhase(5);
+          askHide();   /* 问话超时了后端会自己往下走，面板别留个空框 */
+          say(ztBubble, '臣在写结案文书。');
+        }else if(ev.type === 'summary/final'){
+          if(ev.error){
+            say(ztBubble, '结案文书没写成——' + ev.error);
+          }else if(ev.source === '程序'){
+            say(ztBubble, '中堂没写出结案，臣按实录拼了一份。');
+          }else if(ev.verdict){
+            say(ztBubble, ev.verdict);
+          }
         }
       });
       stopWorkTalk();
+      askHide();
       hideBubble(ztBubble);
       if(!execResult || execResult.error){
+        if(execResult && execResult.aborted){
+          /* 主公自己下令作废，不是出错 */
+          askHide();
+          say(ztBubble, execResult.error);
+          setPhase(0);
+          composer.classList.remove('fold');
+          send.disabled = false;
+          busy = false;
+          return;
+        }
         say(ztBubble, '执行没写成——' + ((execResult && execResult.error) || '没有回音') + '　请主公示下。');
         setPhase(0);
         composer.classList.remove('fold');
@@ -1477,64 +1915,92 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
       await wait(500);
     }
 
-    /* 10 勘验：真执行时只核文件；演示模式仍演一回退回 */
-    setPhase(4);
-    MEMBERS.forEach(function(mm){ if(mm.name !== '刑部') mm.el.classList.add('dim'); });
-    var xing = byName('刑部');
-    await wait(220);
-    xing.el.classList.add('lit');
-    setState(xing, 'thinking', '勘验');
-    if(EXEC){
-      var failed = (EXEC.checks || []).filter(function(c){ return !c.ok; });
-      shout(xing, failed.length ? '退' : '核', !!failed.length);
-      say(ztBubble, failed.length
-        ? ('刑部退回 ' + failed.length + ' 项：文件没写成。')
-        : ('刑部核过。成品在 ' + EXEC.productPath));
-      (EXEC.checks || []).forEach(function(c){
-        var row = rows[c.index];
-        if(!row) return;
-        var mark = row.querySelector('.mark');
-        if(c.ok){
-          row.classList.add('done');
-          if(mark) mark.textContent = '核';
-        }else{
-          row.classList.add('reject');
-          if(mark) mark.textContent = '✗';
-        }
+    /* 10 勘验：真模式下已在执行的流里逐条核完，这里只收尾 */
+    if(EXEC && EXEC.inspection){
+      var insp = EXEC.inspection;
+      MEMBERS.forEach(function(mm){ if(mm.name !== '刑部') mm.el.classList.add('dim'); });
+      var xingLive = byName('刑部');
+      if(xingLive){
+        xingLive.el.classList.add('lit');
+        setState(xingLive, insp.passed ? 'done' : 'blocked', insp.passed ? '已核' : '有退回');
+        shout(xingLive, insp.passed ? '核' : '退', !insp.passed);
+      }
+      var badList = (insp.verdicts || []).filter(function(v){ return !v.ok; });
+      var fixedList = (insp.verdicts || []).filter(function(v){ return v.retried && v.ok; });
+      say(ztBubble, badList.length
+        ? ('刑部退回 ' + badList.length + ' 项，其余已核。')
+        : ('刑部逐条核过 ' + (insp.verdicts || []).length + ' 项' +
+           (fixedList.length ? '，补交的 ' + fixedList.length + ' 项也过了' : '') + '。'));
+      (insp.verdicts || []).forEach(function(v){
+        var line = rows[v.index];
+        if(!line) return;
+        line.classList.toggle('done', !!v.ok);
+        line.classList.toggle('reject', !v.ok);
+        var mkLive = line.querySelector('.mark');
+        if(mkLive) mkLive.textContent = v.ok ? '✓' : '✗';
       });
-      await wait(1600);
+      await wait(1700);
       hideBubble(ztBubble);
-      setState(xing, 'done', failed.length ? '有退回' : '已核');
     }else{
-      shout(xing, '核');
-      say(ztBubble, '刑部勘验：只对单核证，不问过程。');
-      await wait(1650);
-      hideBubble(ztBubble);
-      for(var q=0;q<rows.length;q++){
-        rows[q].querySelector('.mark').textContent = '核';
-        await wait(240);
-      }
-      await wait(320);
-      var r4v = rows[fixIdx] || null;
-      var gongbu = byName('工部');
-      if(r4v){
-        r4v.classList.add('reject');
-        var mk = r4v.querySelector('.mark');
-        if(mk) mk.textContent = '✗';
-        if(gongbu) setState(gongbu, 'blocked', '缺证据');
-        shout(xing, '退', true);
-        setState(xing, 'blocked', '退');
-        say(ztBubble, '第 ' + (fixIdx + 1) + ' 条只有结论、没有证据。退回工部补交。');
-        await wait(1950);
+      setPhase(4);
+      MEMBERS.forEach(function(mm){ if(mm.name !== '刑部') mm.el.classList.add('dim'); });
+      var xing = byName('刑部');
+      await wait(220);
+      xing.el.classList.add('lit');
+      setState(xing, 'thinking', '勘验');
+      if(EXEC){
+        /* 老版本服务端没有 inspection：只能核文件在不在 */
+        var failed = (EXEC.checks || []).filter(function(c){ return !c.ok; });
+        shout(xing, failed.length ? '退' : '核', !!failed.length);
+        say(ztBubble, failed.length
+          ? ('刑部退回 ' + failed.length + ' 项：文件没写成。')
+          : ('刑部核过。成品在 ' + EXEC.productPath));
+        (EXEC.checks || []).forEach(function(c){
+          var rowOld = rows[c.index];
+          if(!rowOld) return;
+          var markOld = rowOld.querySelector('.mark');
+          if(c.ok){
+            rowOld.classList.add('done');
+            if(markOld) markOld.textContent = '核';
+          }else{
+            rowOld.classList.add('reject');
+            if(markOld) markOld.textContent = '✗';
+          }
+        });
+        await wait(1600);
         hideBubble(ztBubble);
-        r4v.classList.remove('reject');
-        if(mk) mk.textContent = '✓';
+        setState(xing, 'done', failed.length ? '有退回' : '已核');
+      }else{
+        shout(xing, '核');
+        say(ztBubble, '刑部勘验：只对单核证，不问过程。');
+        await wait(1650);
+        hideBubble(ztBubble);
+        for(var q=0;q<rows.length;q++){
+          rows[q].querySelector('.mark').textContent = '核';
+          await wait(240);
+        }
+        await wait(320);
+        var r4v = rows[fixIdx] || null;
+        var gongbu = byName('工部');
+        if(r4v){
+          r4v.classList.add('reject');
+          var mk = r4v.querySelector('.mark');
+          if(mk) mk.textContent = '✗';
+          if(gongbu) setState(gongbu, 'blocked', '缺证据');
+          shout(xing, '退', true);
+          setState(xing, 'blocked', '退');
+          say(ztBubble, '第 ' + (fixIdx + 1) + ' 条只有结论、没有证据。退回工部补交。');
+          await wait(1950);
+          hideBubble(ztBubble);
+          r4v.classList.remove('reject');
+          if(mk) mk.textContent = '✓';
+        }
+        if(gongbu) setState(gongbu, 'done', '已补证');
+        say(ztBubble, '补证已到，' + rows.length + ' 条全过。');
+        await wait(1350);
+        hideBubble(ztBubble);
+        setState(xing, 'done', '已核');
       }
-      if(gongbu) setState(gongbu, 'done', '已补证');
-      say(ztBubble, '补证已到，' + rows.length + ' 条全过。');
-      await wait(1350);
-      hideBubble(ztBubble);
-      setState(xing, 'done', '已核');
     }
     MEMBERS.forEach(function(mm){ mm.el.classList.remove('dim'); });
     await wait(300);
@@ -1566,16 +2032,32 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
       await wait(1400);
       await closeScroll(true);
       await wait(300);
-      say(ztBubble, '谢主公。此单结案——执行未接入，本次没有产出文件。');
+      /* 如实报成品。别再说「没产出文件」——成品就在那儿。 */
+      var done;
+      if(EXEC && EXEC.productPath){
+        var parts = String(EXEC.productPath).split(/[\\/]/);
+        done = '谢主公。此单结案，成品是「' + parts[parts.length - 1] + '」。';
+        if(EXEC.inspection && !EXEC.inspection.passed){
+          done += '刑部仍有退回，已记进结案。';
+        }
+      }else{
+        done = '谢主公。此单结案——演示模式，没有写出文件。';
+      }
+      say(ztBubble, done);
     }else if(v === 'back'){
-      setPhase(2);
-      say(ztBubble, '臣即改单，从「附议」重跑。');
-      await wait(1600);
-      hideBubble(ztBubble);
-      verdict.classList.add('show');
+      /* 退回不能假装「改单重跑」：那要主公写明改哪几条，现在的界面收不了，
+         硬做只会拿到一样的结果。老实做——把原需求放回奏折，请主公改一句重下。 */
+      setPhase(0);
+      await closeScroll(true);
+      req.value = lastRequirement;
+      composer.classList.remove('fold');
+      send.disabled = false;
+      busy = false;
+      say(ztBubble, '臣把这单退回。请主公改一句需求，臣重下一单。');
+      req.focus();
     }else{
       setPhase(7);
-      say(ztBubble, '整单作废，臣记一句原因归档。');
+      say(ztBubble, '整单作废。成品还在成品夹里，主公要清掉请自行删除。');
       await wait(1500);
       await closeScroll(true);
     }
@@ -1610,48 +2092,96 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
     if(e.key === 'Enter' && (e.ctrlKey || e.metaKey)){ e.preventDefault(); startCourt(); }
   });
   gavel.addEventListener('click', function(){
-    if(!busy){ startCourt(); }
+    if(busy){
+      /* 议事未毕，击木不生效——但得说一声，不能没反应 */
+      say(ztBubble, '议事未毕，主公稍候。');
+      return;
+    }
+    /* 结案之后击木是「退堂」，不是再升一堂：先把上一场收干净 */
+    if(EXEC || ATTEST || bookReady){
+      recess();
+      return;
+    }
+    startCourt();
   });
   $('#speedBtn').addEventListener('click', function(){
     speed = speed === 1 ? 2 : (speed === 2 ? 4 : 1);
     this.textContent = speed + '×';
   });
-  $('#resetBtn').addEventListener('click', function(){ location.reload(); });
   $('#leafPrev').addEventListener('click', function(){ showBook(bookAt - 1); });
   $('#leafNext').addEventListener('click', function(){ showBook(bookAt + 1); });
 
-  /* ---------- 中堂问话：作答 / 跳过 ---------- */
+  /* ---------- 中堂问话：作答 / 选项 / 跳过 ---------- */
   var asker = $('#asker'), askerQ = $('#askerQ'), askerIn = $('#askerIn');
+  var askerOpts = $('#askerOpts'), askerRowEl = $('#asker .asker-row'), askerSkipEl = $('#askerSkip');
   var askSid = null;
+  /* order＝拆单前澄清；verify＝勘验有退回，问主公怎么处置 */
+  var askKind = 'order';
 
-  function askShow(sid, question){
+  function askShow(sid, question, options, kind, onPick){
     askSid = sid;
+    askKind = kind || 'order';
     askerQ.textContent = '中堂问：' + question;
     askerQ.title = question;
     asker.classList.add('on');
     askerIn.value = '';
-    setTimeout(function(){ askerIn.focus(); }, 60);
+
+    var opts = options || [];
+    askerOpts.innerHTML = '';
+    askerOpts.style.display = opts.length ? 'flex' : 'none';
+    askerRowEl.style.display = opts.length ? 'none' : 'flex';
+    askerSkipEl.style.display = opts.length ? 'none' : 'inline-block';
+
+    if(opts.length){
+      opts.forEach(function(opt){
+        var b = document.createElement('button');
+        b.className = 'asker-opt';
+        b.textContent = opt.label;
+        b.addEventListener('click', function(){
+          /* onPick 是前端本地确认（不经过后端）；否则走 /api/answer 回给服务端 */
+          if(onPick){ onPick(opt.value); } else { answerOrder(opt.value); }
+        });
+        askerOpts.appendChild(b);
+      });
+    }else{
+      setTimeout(function(){ askerIn.focus(); }, 60);
+    }
   }
   function askHide(){
     asker.classList.remove('on');
     askSid = null;
   }
 
-  /** 把回答（空字符串＝跳过）送回后端，后端据此继续拆单。 */
+  /** 前端本地面板：不经过后端，纯粹请主公点头。返回 Promise<选中的值>。 */
+  function askRoyal(question, options){
+    return new Promise(function(resolve){
+      askShow(null, question, options, 'royal', function(value){
+        askHide();
+        resolve(value);
+      });
+    });
+  }
+
+  /** 把回答（空字符串＝跳过）送回后端，后端据此继续。 */
   function answerOrder(answer){
     if(!askSid) return;
     var sid = askSid;
+    var kind = askKind;
     fetch('/api/answer', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sid: sid, answer: answer })
     }).then(function(r){ return r.json(); }).then(function(){
       askHide();
-      say(ztBubble, answer ? '臣领旨，这就拆。' : '臣按原旨拆。');
+      if(kind === 'verify'){
+        say(ztBubble, answer ? '臣领旨。' : '臣按现状结案。');
+      }else{
+        say(ztBubble, answer ? '臣领旨，这就拆。' : '臣按原旨拆。');
+      }
     }).catch(function(){
       /* 送不到（比如服务还是旧版）也不卡流程：按跳过处理 */
       askHide();
-      say(ztBubble, '回话没送到——臣先按原旨拆。');
+      say(ztBubble, kind === 'verify' ? '回话没送到——臣按现状结案。' : '回话没送到——臣先按原旨拆。');
     });
   }
 
@@ -1735,6 +2265,41 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
   if(poseM){
     document.documentElement.classList.add('pose-mode');
     orderNo = newOrderNo();
+    /* ?pose=result&fake=1：塞一份假的真实结果，专门验附议行与结语行的版式。
+       只在定妆时生效，正常流程一概不碰。 */
+    if(/[?&]fake=1/.test(location.search)){
+      ATTEST = {
+        rounds: 2, escalate: false,
+        amendments: [{index:3, by:'兵部', action:'做可视化原型（一期静态场景）', deliverable:'可运行 demo'}],
+        stances: [{dept:'户部', verdict:'异议'}, {dept:'兵部', verdict:'异议'}]
+      };
+      EXEC = {
+        orderNo: '20261025-01',
+        caseDir: 'E:\\WorkSpace\\项目\\升堂工作流\\成品',
+        productPath: 'E:\\WorkSpace\\项目\\升堂工作流\\成品\\升日动画.html',
+        productUrl: '/成品/升日动画.html',
+        ok: true,
+        checks: [],
+        inspection: {
+          passed: false,
+          verdicts: [
+            {index:0, dept:'吏部', ok:true, retried:false, reason:''},
+            {index:1, dept:'户部', ok:true, retried:true, reason:''},
+            {index:2, dept:'兵部', ok:true, retried:false, reason:''},
+            {index:3, dept:'工部', ok:false, retried:true, reason:'缺使用说明：正文仅含 HTML 代码，未写怎么打开、怎么操作'},
+            {index:4, dept:'礼部', ok:true, retried:false, reason:''}
+          ]
+        },
+        summary: {
+          verdict: '单文件升日动画已交付，双击可运行，含开始按钮。',
+          points: ['礼部：文案与交互说明已定稿。', '兵部：代码逻辑完整，可运行。'],
+          risks: ['素材未实际替换，页面使用占位路径运行。'],
+          undone: ['未提供真实素材文件，仅交付占位引用逻辑。'],
+          path: 'E:\\WorkSpace\\项目\\升堂工作流\\发布\\.shengtang\\结案\\20261025-01.md',
+          source: '中堂'
+        }
+      };
+    }
     composer.classList.add('fold');
     MEMBERS.forEach(function(m){ m.el.classList.add('lit'); });
     zhongtang.classList.add('pose','stand');
@@ -1755,6 +2320,32 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
       var nt = scrollInner.querySelector('#scNote');
       if(nt){ nt.textContent = '改单记录：第 4 条由「场景与动效」拆为两期，一期只做静态场景。依据：兵部异议。'; nt.classList.add('show'); }
       scrollInner.querySelector('.t-row[data-id="4"]').classList.add('changed');
+    }else if(poseM[1] === 'confirm'){
+      /* 定妆：开工前请主公过目那一拍 */
+      setPhase(2);
+      scrollInner.innerHTML = orderHTML('把「升堂工作流」做成一个能看的朝堂场景：输入需求、点升堂、惊堂木一响，六司齐呼，中堂出来拆单、收附议，刑部独立勘验后汇总。');
+      scrollEl.classList.add('open');
+      Array.prototype.forEach.call(scrollInner.querySelectorAll('.t-row'), function(r){
+        r.classList.add('in', 'done');
+      });
+      say(ztBubble, '附议已定，请主公过目。', true);
+      askShow(
+        null,
+        '附议已定。主公准了臣就开工；要改就退回重下一单。',
+        [{ label: '准了，开工', value: 'go' }, { label: '退回重拆', value: 'back' }],
+        'royal',
+        function(){}
+      );
+    }else if(poseM[1] === 'recess'){
+      /* 定妆：退堂之后的清场态。专门验「清场有没有抹干净」——
+         漏一样，下一场就带着上一场的残留 */
+      setPhase(7);
+      EXEC = { productPath: 'x.html', productUrl: '', caseDir: '', ok: true, checks: [], inspection: { passed: true, verdicts: [] }, summary: { verdict: '假', risks: [], undone: [] } };
+      ATTEST = { rounds: 1, stances: [], amendments: [] };
+      scrollInner.innerHTML = resultHTML();
+      scrollEl.classList.add('open');
+      verdict.classList.add('show');
+      setTimeout(function(){ recess(); }, 500);
     }else if(poseM[1] === 'verify'){
       setPhase(4);
       scrollInner.innerHTML = orderHTML('把「升堂工作流」做成一个能看的朝堂场景：输入需求、点升堂、惊堂木一响，六司齐呼，中堂出来拆单、收附议，刑部独立勘验后汇总。');
@@ -1765,6 +2356,10 @@ body{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;-webkit-fon
         if(i === 3){
           r.classList.add('reject');
           r.querySelector('.mark').textContent = '✗';
+          var w = document.createElement('div');
+          w.className = 'why';
+          w.textContent = '刑部退回：只有结论、没有证据，缺可复核的做法与数字';
+          r.appendChild(w);
         }
       });
       MEMBERS.forEach(function(m){ if(m.name !== '刑部') m.el.classList.add('dim'); });

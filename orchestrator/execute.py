@@ -27,6 +27,22 @@ _THINK = re.compile(r"<think>.*?</think>", re.S | re.I)
 #: 单份交付物的上限，防止模型把案卷写成一本厚书。
 MAX_BYTES = 200_000
 
+#: 成品要挑「最像成品」的那一件。只按长度挑会选错——
+#: 实测踩过：礼部交了个 7868 字符的「文案清单」HTML（内容其实是一整个动画页），
+#: 把兵部 3291 字符的动画页挤掉，结果结案说「动画已交付」，成品却是任务清单。
+#:
+#: 所以分两步：先排除「纸」（清单/说明/文案/报告），再在剩下的里看是不是视觉类，最后比长度。
+_VISUAL_HINTS = ("动画", "页面", "原型", "demo", "网页", "场景", "可视化", "小游戏")
+_PAPER_HINTS = ("清单", "说明", "文案", "报告", "文档", "名册", "任务表", "升堂单")
+
+
+def _product_rank(item: tuple[str, str, str]) -> tuple[int, int, int]:
+    """纸类排最后；同为视觉类才比长度。"""
+    _filename, body, hint = item
+    paper = 1 if any(word in hint for word in _PAPER_HINTS) else 0
+    visual = 1 if any(word in hint for word in _VISUAL_HINTS) else 0
+    return (-paper, visual, len(body))
+
 
 @dataclass
 class Check:
@@ -36,6 +52,11 @@ class Check:
     path: str
     ok: bool
     note: str
+    #: 交回来的正文。只留在内存里给刑部核，不进 to_dict——正文动辄几万字符，
+    #: 发给前端没有意义，还会把 SSE 撑爆。
+    body: str = ""
+    #: 正文是被 max_tokens 截断后补的闭合标签。刑部要知道这件事。
+    patched: bool = False
 
 
 @dataclass
@@ -66,6 +87,7 @@ class Execution:
                     "path": c.path,
                     "ok": c.ok,
                     "note": c.note,
+                    "patched": c.patched,
                 }
                 for c in self.checks
             ],
@@ -145,14 +167,45 @@ def is_complete_page(body: str) -> bool:
     return "</html>" in body.lower()
 
 
-def _task_prompt(order: Order, dept: str, action: str, deliverable: str) -> str:
+def close_partial_html(body: str) -> tuple[str, bool]:
+    """模型被 max_tokens 截断时，补个收尾，让它至少能打开。
+
+    只补闭合标签，不编内容。补过之后页面尾部可能缺，但浏览器能渲染——
+    比交一个打不开的半截文件强，也比整条白干强。补过这件事要记下来，
+    刑部有权知道这份东西的结尾是拼上去的。
+    """
+    low = body.lower()
+    if "</html>" in low:
+        return body, False
+    if "<html" not in low and "<!doctype" not in low:
+        return body, False
+    tail = ""
+    if "</body>" not in low:
+        tail += "\n</body>"
+    return body + tail + "\n</html>", True
+
+
+def task_prompt(order: Order, dept: str, action: str, deliverable: str) -> str:
     visual = any(word in (action + deliverable) for word in ("动画", "页面", "原型", "demo", "HTML", "html"))
-    shape = (
-        "输出一份能单独打开的完整 HTML，从 <!DOCTYPE html> 写起，"
-        "样式和动画都写在这一份里，不要外链，必须写到 </html> 结束。"
-        if visual
-        else "输出 Markdown 正文。"
+    #: 交付物里要说明/步骤的，光让模型「不写说明」就永远交不出来（实测踩过）
+    wants_doc = any(
+        word in deliverable for word in ("说明", "步骤", "用法", "指南", "文档", "清单")
     )
+    if visual:
+        shape = (
+            "输出一份能单独打开的完整 HTML，从 <!DOCTYPE html> 写起，"
+            "样式和动画都写在这一份里，不要外链，必须写到 </html> 结束。"
+            "篇幅控制在 200 行以内。"
+        )
+        if wants_doc:
+            shape += (
+                "交付物里还要说明或操作步骤的，就在页面末尾加一节写出来"
+                "（怎么打开、怎么操作、支持哪些浏览器），不要只说「详见文档」。"
+            )
+        else:
+            shape += "不写注释、不写多余说明——写不完就等于没交。"
+    else:
+        shape = "输出 Markdown 正文，不超过 400 字。"
     return (
         f"你是升堂的{dept}，只负责这一条，不要做别人的活。\n"
         f"目标：{order.goal}\n"
@@ -186,17 +239,22 @@ def execute_order(
 
     used: set[str] = set()
     checks: list[Check] = []
-    htmls: list[tuple[str, str]] = []
+    #: (文件名, 正文, 这条任务要做什么)——第三项用来判断哪一件更像成品
+    htmls: list[tuple[str, str, str]] = []
 
     for index, task in enumerate(order.tasks):
         dept = task.dept
         if dept not in DEPARTMENTS:
-            checks.append(Check(index, dept, task.deliverable, "", False, "此司不接执行"))
+            checks.append(
+                Check(index, dept, task.deliverable, "", False, "此司不接执行", "")
+            )
             emit({"type": "execute/task", "index": index, "dept": dept, "ok": False, "note": "此司不接执行"})
             continue
         emit({"type": "execute/working", "index": index, "dept": dept})
         try:
-            raw = llm.quick(_task_prompt(order, dept, task.action, task.deliverable), max_tokens=6000)
+            # 12000 而不是 6000：6000 写不完一页带样式和动画的 HTML，
+            # 实测会被硬截断，永远到不了 </html>，那条必然判失败。
+            raw = llm.quick(task_prompt(order, dept, task.action, task.deliverable), max_tokens=12000)
             body = strip_model_text(raw)
         except Exception as exc:  # noqa: BLE001
             body = ""
@@ -205,37 +263,69 @@ def execute_order(
             fail_note = ""
         if len(body.strip()) < 20:
             note = fail_note or "交回来的是空的"
-            checks.append(Check(index, dept, task.deliverable, "", False, note))
+            checks.append(Check(index, dept, task.deliverable, "", False, note, body))
             emit({"type": "execute/task", "index": index, "dept": dept, "ok": False, "note": note})
             continue
-        if is_side_paper(task.action, task.deliverable):
-            checks.append(Check(index, dept, task.deliverable, "", True, "说明不进成品夹"))
+        # 交付物里提到「说明」但正文其实是一整个页面时，不能当纸丢掉——
+        # 否则「HTML + 使用说明」这种活，交出来的页面会凭空消失
+        body_is_html = body.lstrip().lower().startswith(("<!doctype", "<html", "<style"))
+        if is_side_paper(task.action, task.deliverable) and not body_is_html:
+            checks.append(
+                Check(index, dept, task.deliverable, "", True, "说明不进成品夹", body)
+            )
             emit({"type": "execute/task", "index": index, "dept": dept, "ok": True, "note": "说明不进成品夹"})
             continue
         filename = choose_filename(task.deliverable, body, used)
-        if not filename.lower().endswith((".html", ".htm")) or not is_complete_page(body):
-            note = "写到一半就停了，不进成品夹" if filename.lower().endswith((".html", ".htm")) else "说明不进成品夹"
-            ok = not filename.lower().endswith((".html", ".htm"))
-            checks.append(Check(index, dept, task.deliverable, "", ok, note))
-            emit({"type": "execute/task", "index": index, "dept": dept, "ok": ok, "note": note})
+        is_html = filename.lower().endswith((".html", ".htm"))
+        patched = False
+        if is_html:
+            body, patched = close_partial_html(body)
+        if is_html and not is_complete_page(body):
+            # 连 <html 都没有，补也补不成页面
+            note = "写到一半就停了，不进成品夹"
+            checks.append(Check(index, dept, task.deliverable, "", False, note, body))
+            emit({"type": "execute/task", "index": index, "dept": dept, "ok": False, "note": note})
             continue
-        htmls.append((filename, body))
-        checks.append(Check(index, dept, task.deliverable, "", True, "待收成一件成品"))
-        emit({"type": "execute/task", "index": index, "dept": dept, "ok": True, "note": "待收成一件成品"})
+        if not is_html:
+            checks.append(
+                Check(index, dept, task.deliverable, "", True, "说明不进成品夹", body)
+            )
+            emit({"type": "execute/task", "index": index, "dept": dept, "ok": True, "note": "说明不进成品夹"})
+            continue
+        htmls.append((filename, body, task.action + task.deliverable))
+        checks.append(
+            Check(index, dept, task.deliverable, "", True, "待收成一件成品", body, patched)
+        )
+        emit(
+            {
+                "type": "execute/task",
+                "index": index,
+                "dept": dept,
+                "ok": True,
+                "note": "结尾被截断，已补闭合标签" if patched else "待收成一件成品",
+                "patched": patched,
+            }
+        )
 
     product: Path = product_dir
     if htmls:
-        filename, body = max(htmls, key=lambda item: len(item[1]))
+        filename, body, _hint = max(htmls, key=_product_rank)
         for old in product_dir.iterdir():
             if old.is_file():
                 old.unlink()
         product = product_dir / filename
         _write(product_dir, product, body)
+        # 只有真正成为成品的那一条记文件路径；其余如实写「已并入」。
+        # 全都记成同一路径会让刑部误以为每条都落了这个文件。
+        stem = filename.rsplit(".", 1)[0]
         for item in checks:
             if item.note != "待收成一件成品":
                 continue
-            item.path = str(product)
-            item.note = "成品已落盘" if safe_stem(item.deliverable) == filename.split(".")[0] else "已并入这一件成品"
+            if safe_stem(item.deliverable) == stem:
+                item.path = str(product)
+                item.note = "成品已落盘"
+            else:
+                item.note = "已并入这一件成品"
     result = Execution(number, product_dir, product, checks)
     emit({"type": "execute/final", **result.to_dict()})
     return result

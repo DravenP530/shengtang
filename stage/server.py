@@ -38,8 +38,11 @@ if str(ROOT) not in sys.path:
 
 from orchestrator.llm import LLM, LLMConfig  # noqa: E402
 from orchestrator.orchestrator import OrderRejected, Zhongtang  # noqa: E402
+from orchestrator.attest import run_attest  # noqa: E402
+from orchestrator.verify import run_verify  # noqa: E402
+from orchestrator.summary import run_summary  # noqa: E402
 from orchestrator.execute import execute_order  # noqa: E402
-from orchestrator.schema import parse_order, validate  # noqa: E402
+from orchestrator.schema import Order, parse_order, validate  # noqa: E402
 from stage.cloud import (  # noqa: E402
     CloudError,
     CloudLink,
@@ -53,8 +56,12 @@ from stage.cloud import (  # noqa: E402
 )
 
 CASE_ROOT = Path(__file__).resolve().parents[2] / "成品"
+#: 结案文书落这里。不进成品夹（成品夹只留一件能打开的），也不进仓库。
+SUMMARY_DIR = ROOT / ".shengtang" / "结案"
 STAGE_FILE = Path(__file__).resolve().parent / "index.html"
 _EXEC_LOCK = threading.Lock()
+#: 附议也要独占：六司串行问模型，同时来两场会互相插队，本地模型扛不住。
+_ATTEST_LOCK = threading.Lock()
 _CASE_FILE = re.compile(r"^/成品/([^/]+)$")
 
 CONFIG = LLMConfig.from_env()
@@ -166,6 +173,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
+        if path == "/api/attest":
+            self._attest()
+            return
         if path == "/api/execute":
             self._execute()
             return
@@ -232,43 +242,131 @@ class Handler(BaseHTTPRequestHandler):
             return target
         return None
 
-    def _execute(self) -> None:
+    # ---------------------------------------------------------- 公用小件
+
+    def _sse_headers(self) -> None:
+        """开一条 SSE 流。三条头缺一不可：不缓存、不保活、写完即断。"""
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "close")
+        self.end_headers()
+
+    def _read_order_body(self) -> tuple[dict, Order | None, str, int]:
+        """读 POST 体里的升堂单并校验。
+
+        返回 (原始 dict, order 或 None, 错误信息, HTTP 状态码)。
+        附议和执行都要过这一关——单子不合格就别浪费模型调用。
+        """
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
             length = 0
         if length > 100_000:
-            self._send_bytes("请求过大".encode(), "text/plain; charset=utf-8", 413)
-            return
+            return {}, None, "请求过大", 413
         raw = self.rfile.read(length) if length > 0 else b""
         try:
             data = json.loads(raw.decode("utf-8") or "{}")
             order = parse_order(json.dumps(data.get("order") or {}, ensure_ascii=False))
             problems = validate(order)
         except Exception as exc:  # noqa: BLE001
-            self._send_bytes(
-                json.dumps({"ok": False, "error": f"升堂单不合格：{exc}"}, ensure_ascii=False).encode(),
-                "application/json; charset=utf-8",
-                400,
-            )
-            return
+            return {}, None, f"升堂单不合格：{exc}", 400
         if problems:
-            self._send_bytes(
-                json.dumps({"ok": False, "error": "；".join(problems)}, ensure_ascii=False).encode(),
-                "application/json; charset=utf-8",
-                400,
-            )
+            return data, None, "；".join(problems), 400
+        return data, order, "", 200
+
+    def _ask_human(
+        self,
+        emit,
+        type_: str,
+        question: str,
+        options: list[dict] | None = None,
+        timeout: float = ANSWER_TIMEOUT,
+    ) -> str:
+        """把问题推给前端，阻塞等主公回答。超时或离场返回空串。
+
+        等待期间每秒写一个 SSE 注释心跳——既让连接活着，也能在主公关掉页面时
+        立刻发现（往死连接上写就会炸）。超时由调用方决定怎么办，绝不卡死流程。
+        """
+        sid = uuid.uuid4().hex[:8]
+        box: dict = {"answer": "", "done": threading.Event(), "gone": False}
+        with _PENDING_LOCK:
+            _PENDING[sid] = box
+        try:
+            payload: dict = {"type": type_, "sid": sid, "question": question}
+            if options:
+                payload["options"] = options
+            emit(payload)
+            deadline = time.monotonic() + timeout
+            while not box["done"].wait(1.0):
+                if time.monotonic() >= deadline:
+                    break
+                try:
+                    self.wfile.write(b": ping\n\n")
+                    self.wfile.flush()
+                except OSError:
+                    box["gone"] = True
+                    break
+            if box["gone"]:
+                raise ConnectionError("主公已离场，问话作废")
+            return str(box["answer"] or "")
+        finally:
+            with _PENDING_LOCK:
+                _PENDING.pop(sid, None)
+
+    # ---------------------------------------------------------- 附议
+
+    def _attest(self) -> None:
+        """五司真表态。有异议就改单，改完再表态；两轮不成上抛主公。"""
+        data, order, error, status = self._read_order_body()
+        if order is None:
+            self._send_json({"ok": False, "error": error}, status)
+            return
+
+        model = str(data.get("model") or "").strip()
+        profile = str(data.get("profile") or "").strip()
+
+        self._sse_headers()
+
+        def emit(event: dict) -> None:
+            payload = json.dumps(event, ensure_ascii=False)
+            self.wfile.write(f"data: {payload}\n\n".encode("utf-8"))
+            self.wfile.flush()
+
+        if not _ATTEST_LOCK.acquire(blocking=False):
+            emit({"type": "attest/final", "error": "已有单在附议，请稍候"})
+            return
+        try:
+            cfg, message = self._call_config(profile, model)
+            if message or cfg is None:
+                emit({"type": "attest/final", "error": message or "模型没选对"})
+                return
+            with LLM(cfg) as llm:
+                run_attest(llm, order, on_event=emit)
+        except Exception as exc:  # noqa: BLE001
+            emit({"type": "attest/final", "error": f"{type(exc).__name__}: {exc}"})
+        finally:
+            _ATTEST_LOCK.release()
+
+    # ---------------------------------------------------------- 执行
+
+    def _execute(self) -> None:
+        data, order, error, status = self._read_order_body()
+        if order is None:
+            if status == 413:
+                self._send_bytes("请求过大".encode(), "text/plain; charset=utf-8", 413)
+            else:
+                self._send_json({"ok": False, "error": error}, status)
             return
 
         requirement = str(data.get("requirement") or order.goal)[:2000]
         model = str(data.get("model") or "").strip()
         profile = str(data.get("profile") or "").strip()
+        # 附议结果由前端带回：改单记录和各司表态只有它知道。
+        # 没有也能跑——汇总会少一段过程记录，不影响执行和勘验。
+        attest = data.get("attest") if isinstance(data.get("attest"), dict) else None
 
-        self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Connection", "close")
-        self.end_headers()
+        self._sse_headers()
 
         def emit(event: dict) -> None:
             payload = json.dumps(event, ensure_ascii=False)
@@ -284,7 +382,79 @@ class Handler(BaseHTTPRequestHandler):
                 emit({"type": "execute/final", "error": message or "模型没选对"})
                 return
             with LLM(cfg) as llm:
-                execute_order(llm, order, requirement, CASE_ROOT, on_event=emit)
+                execution = execute_order(llm, order, requirement, CASE_ROOT, on_event=emit)
+                # 勘验接在同一条流里：各司交回来的正文只在内存里，
+                # 另开一个请求就拿不到了。核完再发一条 final 把结果一并带上。
+                inspection = None
+                try:
+                    inspection = run_verify(llm, order, execution, on_event=emit)
+                except Exception as exc:  # noqa: BLE001 - 勘验炸了不能吞掉执行结果
+                    emit({"type": "verify/final", "passed": False, "verdicts": [], "error": str(exc)})
+
+                # 有退回就停下来问主公。不能替他决定「半成品也收」——
+                # 补交只补一次，补不过就摆到主公面前让他定。
+                # 超时或离场按「就此结案」走：问话是增益，不能变成卡死的门槛。
+                if inspection is not None and not inspection.passed:
+                    failed = inspection.failed
+                    names = "、".join(f"第 {v.index + 1} 条" for v in failed)
+                    answer = ""
+                    try:
+                        answer = self._ask_human(
+                            emit,
+                            "verify/question",
+                            f"刑部退回 {len(failed)} 项（{names}），眼下这一件是半成品。主公要臣怎么办？",
+                            [
+                                {"label": "再补一轮", "value": "retry"},
+                                {"label": "就此结案", "value": "accept"},
+                                {"label": "整单作废", "value": "abort"},
+                            ],
+                        )
+                    except Exception:  # noqa: BLE001 - 主公离场就按结案走
+                        answer = ""
+                    choice = (answer or "").strip().lower()
+
+                    if any(w in choice for w in ("abort", "作废", "不要", "算了")):
+                        emit(
+                            {
+                                "type": "execute/final",
+                                "aborted": True,
+                                "error": "主公下令作废，这一单不结案。成品还在成品夹，要清掉请自行删除。",
+                            }
+                        )
+                        return
+                    if any(w in choice for w in ("retry", "补", "再")):
+                        emit({"type": "verify/round2"})
+                        try:
+                            inspection = run_verify(
+                                llm, order, execution, on_event=emit, announce=False
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            emit({"type": "verify/final", "passed": False, "verdicts": [], "error": str(exc)})
+
+                # 汇总也在这条流里：它要引用附议记录、执行结果、勘验结论，
+                # 这三样只有此刻才都在手上。
+                summary = None
+                try:
+                    summary = run_summary(
+                        llm,
+                        order,
+                        requirement,
+                        execution,
+                        inspection,
+                        attest,
+                        out_dir=SUMMARY_DIR,
+                        order_no=execution.order_no,
+                        on_event=emit,
+                    )
+                except Exception as exc:  # noqa: BLE001 - 汇总失败不能吞掉前两步
+                    emit({"type": "summary/final", "error": str(exc)})
+
+                payload = execution.to_dict()
+                if inspection is not None:
+                    payload["inspection"] = inspection.to_dict()
+                if summary is not None:
+                    payload["summary"] = summary.to_dict()
+                emit({"type": "execute/final", **payload})
         except Exception as exc:  # noqa: BLE001
             emit({"type": "execute/final", "error": f"{type(exc).__name__}: {exc}"})
         finally:
@@ -420,33 +590,8 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         def clarifier(question: str) -> str:
-            """中堂问话：把问题推给前端，然后停下来等主公回答。
-
-            等待期间每秒发一个 SSE 注释心跳——既让连接活着，
-            也能在主公关掉页面时立刻发现（往死连接上写就会炸）。
-            """
-            sid = uuid.uuid4().hex[:8]
-            box = {"answer": "", "done": threading.Event(), "gone": False}
-            with _PENDING_LOCK:
-                _PENDING[sid] = box
-            try:
-                emit({"type": "order/question", "sid": sid, "question": question})
-                deadline = time.monotonic() + ANSWER_TIMEOUT
-                while not box["done"].wait(1.0):
-                    if time.monotonic() >= deadline:
-                        break
-                    try:
-                        self.wfile.write(b": ping\n\n")
-                        self.wfile.flush()
-                    except OSError:
-                        box["gone"] = True
-                        break
-                if box["gone"]:
-                    raise ConnectionError("主公已离场，问话作废")
-                return box["answer"]
-            finally:
-                with _PENDING_LOCK:
-                    _PENDING.pop(sid, None)
+            """中堂问话：把问题推给前端，然后停下来等主公回答。"""
+            return self._ask_human(emit, "order/question", question)
 
         try:
             with LLM(cfg) as llm:

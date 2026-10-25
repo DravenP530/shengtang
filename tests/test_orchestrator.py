@@ -18,6 +18,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from orchestrator.llm import FastPathUnavailable, LLMConfig  # noqa: E402
 from orchestrator.orchestrator import OrderRejected, Zhongtang, parse_question  # noqa: E402
+from orchestrator.attest import parse_stance, run_attest  # noqa: E402
+from orchestrator.verify import audit, parse_verdict, run_verify  # noqa: E402
+from orchestrator.summary import parse_summary, run_summary  # noqa: E402
 from orchestrator.schema import ParseError, parse_order, validate  # noqa: E402
 from orchestrator.execute import (  # noqa: E402
     allocate_case_id,
@@ -502,6 +505,571 @@ def test_cloud_config_points_at_that_key():
 def test_parse_openai_model_list():
     ids = model_ids_from({"data": [{"id": "a"}, {"id": ""}, {"id": "a"}, "nope", {"name": "b"}]})
     assert ids == ["a"]
+
+
+# ---------------------------------------------------------------- 附议
+
+
+AGREE_JSON = '{"表态":"附议"}'
+
+
+def _order_three():
+    from orchestrator.schema import Order, Task
+
+    return Order(
+        goal="做一页能打开的升日动画",
+        tasks=[
+            Task("礼部", "写一句画面说明", "画面说明"),
+            Task("兵部", "做升日动画", "升日动画"),
+            Task("工部", "写一句如何打开", "打开说明"),
+        ],
+    )
+
+
+def test_attest_all_agree_passes_in_one_round():
+    """五司全附议：一轮收口，单子一个字不动。刑部不参加。"""
+    llm = ScriptedLLM([AGREE_JSON] * 5)
+    events = []
+    result = run_attest(llm, _order_three(), on_event=events.append)
+
+    assert result.passed
+    assert result.rounds == 1
+    assert llm.fast_calls == 5
+    assert result.amendments == []
+    assert events[-1]["type"] == "attest/final"
+    assert events[-1]["passed"] is True
+
+
+def test_attest_dissent_amends_order_and_second_round_passes():
+    """兵部提异议 → 真改单 → 第二轮全附议。改的是单子本身，不只是屏幕。"""
+    dissent = '{"表态":"异议","理由":"工期不够","改第几条":2,"改成什么":"先出静态场景"}'
+    replies = [AGREE_JSON, AGREE_JSON, AGREE_JSON, dissent, AGREE_JSON] + [AGREE_JSON] * 5
+    llm = ScriptedLLM(replies)
+    result = run_attest(llm, _order_three())
+
+    assert result.passed
+    assert result.rounds == 2
+    assert len(result.amendments) == 1
+    assert result.order.tasks[1].action == "先出静态场景"
+    # 没给新交付物就保留原样，不许把它改成空
+    assert result.order.tasks[1].deliverable == "升日动画"
+    # 别的条一个字都不许动
+    assert result.order.tasks[0].action == "写一句画面说明"
+    assert result.order.tasks[2].action == "写一句如何打开"
+
+
+def test_attest_second_round_sees_the_amendment():
+    """第二轮提示词里要写明上一轮改了什么，否则它会重复提同一个异议。"""
+    dissent = '{"表态":"异议","理由":"工期不够","改第几条":2,"改成什么":"先出静态场景"}'
+    replies = [AGREE_JSON, AGREE_JSON, AGREE_JSON, dissent, AGREE_JSON] + [AGREE_JSON] * 5
+    llm = ScriptedLLM(replies)
+    run_attest(llm, _order_three())
+
+    second = llm.prompts[5]
+    assert "已按上一轮异议改过" in second
+    assert "先出静态场景" in second
+
+
+def test_attest_vague_dissent_falls_back_to_agree():
+    """提了异议却没说清改哪条 → 不算数，降级为附议，不拖流程。"""
+    vague = '{"表态":"异议","理由":"感觉不太行"}'
+    llm = ScriptedLLM([AGREE_JSON, AGREE_JSON, AGREE_JSON, vague, AGREE_JSON])
+    result = run_attest(llm, _order_three())
+
+    assert result.passed
+    assert result.rounds == 1
+    assert result.amendments == []
+    bing = [s for s in result.stances if s.dept == "兵部"][0]
+    assert bing.verdict == "附议"
+    assert "没说清" in bing.reason
+
+
+def test_attest_two_rounds_without_consensus_escalates():
+    """两轮都吵不下来 → 上抛主公，不许无限吵。"""
+    first = '{"表态":"异议","理由":"不行","改第几条":2,"改成什么":"做法甲"}'
+    second = '{"表态":"异议","理由":"还是不行","改第几条":2,"改成什么":"做法乙"}'
+    replies = (
+        [AGREE_JSON] * 3 + [first] + [AGREE_JSON]
+        + [AGREE_JSON] * 3 + [second] + [AGREE_JSON]
+    )
+    llm = ScriptedLLM(replies)
+    result = run_attest(llm, _order_three())
+
+    assert not result.passed
+    assert result.escalate
+    assert result.rounds == 2
+    assert llm.fast_calls == 10
+
+
+def test_attest_model_failure_does_not_block():
+    """某个司的模型调用炸了 → 跳过它，不当异议，整场照常收口。"""
+
+    class Flaky:
+        def __init__(self):
+            self.n = 0
+
+        def quick(self, prompt, **kwargs):
+            self.n += 1
+            if self.n == 2:
+                raise RuntimeError("端点没应")
+            return AGREE_JSON
+
+    events = []
+    result = run_attest(Flaky(), _order_three(), on_event=events.append)
+
+    assert result.passed
+    assert any(e["type"] == "attest/skip" for e in events)
+
+
+def test_attest_bad_amendment_is_not_applied():
+    """改完反而不合格（交付物写空话）→ 这一条不改，也不许把坏单子往下走。"""
+    bad = '{"表态":"异议","理由":"要改","改第几条":2,"改成什么":"重做","交付物改成":"研究一下"}'
+    llm = ScriptedLLM([AGREE_JSON, AGREE_JSON, AGREE_JSON, bad, AGREE_JSON])
+    result = run_attest(llm, _order_three())
+
+    assert not result.passed
+    assert result.amendments == []
+    assert result.order.tasks[1].deliverable == "升日动画"
+
+
+def test_parse_stance_handles_fenced_and_numbered():
+    """模型爱包代码块、爱写「第 3 条」——解析层要忍。"""
+    raw = '```json\n{"表态":"异议","改第几条":"第 3 条","改成什么":"先做静态页"}\n```'
+    stance = parse_stance(raw, "兵部")
+
+    assert stance.verdict == "异议"
+    assert stance.target == 3
+    assert stance.valid
+
+
+def test_parse_stance_no_dissent_is_agree():
+    """「无异议」里含「异议」两个字，判序不能反。"""
+    stance = parse_stance('{"表态":"无异议"}', "户部")
+    assert stance.verdict == "附议"
+
+
+def test_attest_prompt_is_per_department():
+    """六司共用一句话，真调模型也只会齐声附议。视角必须按司分开。"""
+    from orchestrator.prompts import attest_prompt
+
+    order = _order_three()
+    hubu = attest_prompt(order, "户部")
+    bingbu = attest_prompt(order, "兵部")
+
+    assert "资源够不够" in hubu
+    assert "技术上做不做得出来" in bingbu
+    assert "刑部" not in hubu
+
+
+# ---------------------------------------------------------------- 勘验
+
+
+def _order_one():
+    from orchestrator.schema import Order, Task
+
+    return Order(goal="做一页升日动画", tasks=[Task("兵部", "做升日动画", "升日动画")])
+
+
+def _execution_one(body="<!DOCTYPE html><html><body>日出</body></html>"):
+    from pathlib import Path
+
+    from orchestrator.execute import Check, Execution
+
+    return Execution(
+        "20261025-01",
+        Path("."),
+        Path("."),
+        [Check(0, "兵部", "升日动画", "", True, "待收成一件成品", body)],
+    )
+
+
+def test_parse_verdict_handles_no_go():
+    """「不过」里含「过」，判序不能反。"""
+    assert parse_verdict('{"核":"过"}') == (True, "")
+    ok, reason = parse_verdict('{"核":"退","理由":"没有证据"}')
+    assert ok is False
+    assert "证据" in reason
+    assert parse_verdict('{"核":"不过"}')[0] is False
+    assert parse_verdict("看不懂") is None
+
+
+def test_verify_skips_model_when_objective_fails():
+    """执行阶段就没交出来 → 客观层直接退，不浪费一次模型调用。"""
+    from pathlib import Path
+
+    from orchestrator.execute import Check, Execution
+
+    class Silent:
+        def __init__(self):
+            self.calls = 0
+
+        def quick(self, prompt, **kwargs):
+            self.calls += 1
+            return '{"核":"过"}'
+
+    llm = Silent()
+    execution = Execution(
+        "x", Path("."), Path("."), [Check(0, "兵部", "升日动画", "", False, "交回来的是空的", "")]
+    )
+    result = run_verify(llm, _order_one(), execution, allow_retry=False)
+
+    assert not result.passed
+    assert llm.calls == 0
+    assert result.verdicts[0].source == "客观"
+
+
+def test_verify_reads_content_not_just_files():
+    """客观层过了还要看内容：正文真送进提示词，刑部说退就得退。"""
+
+    class Judge:
+        def quick(self, prompt, **kwargs):
+            assert "日出" in prompt
+            assert "程序已经查过" in prompt
+            return '{"核":"退","理由":"只有一句话，没有可复核的做法"}'
+
+    result = run_verify(Judge(), _order_one(), _execution_one(), allow_retry=False)
+
+    assert not result.passed
+    assert "可复核" in result.verdicts[0].reason
+    assert result.verdicts[0].source == "客观+刑部"
+
+
+def test_verify_retries_once_and_records_it():
+    """退回 → 真补交 → 再核 → 过。补交这件事要记在结果里。"""
+
+    class Retry:
+        def __init__(self):
+            self.n = 0
+
+        def quick(self, prompt, **kwargs):
+            self.n += 1
+            if "补上这一点" in prompt:
+                return (
+                    "<!DOCTYPE html><html><body>"
+                    "日出：先画地平线，再逐帧抬升太阳，共 24 帧。"
+                    "</body></html>"
+                )
+            if "程序已经查过" in prompt:
+                if "24 帧" in prompt:
+                    return '{"核":"过"}'
+                return '{"核":"退","理由":"太短，没有做法"}'
+            raise AssertionError("意料之外的调用")
+
+    llm = Retry()
+    result = run_verify(llm, _order_one(), _execution_one(), allow_retry=True)
+
+    assert result.passed
+    assert result.verdicts[0].retried
+    assert llm.n == 3  # 核 → 补交 → 再核
+
+
+def test_verify_falls_back_to_facts_when_judge_silent():
+    """刑部没应 → 按客观放行，但如实标「刑部未应」，不许假装核过。"""
+
+    class Dead:
+        def quick(self, prompt, **kwargs):
+            raise RuntimeError("端点没应")
+
+    events = []
+    result = run_verify(
+        Dead(), _order_one(), _execution_one(), on_event=events.append, allow_retry=False
+    )
+
+    assert result.passed
+    assert "刑部未应" in result.verdicts[0].source
+    assert any(e["type"] == "verify/skip" for e in events)
+
+
+def test_audit_reports_html_completeness():
+    """客观层要说出「是不是完整页面」，这是刑部下判的依据。"""
+    import tempfile
+    from pathlib import Path
+
+    from orchestrator.execute import Check
+
+    path = Path(tempfile.mkdtemp()) / "page.html"
+    path.write_text("<!DOCTYPE html><html><body>x</body></html>", "utf-8")
+    check = Check(0, "兵部", "页面", str(path), True, "成品已落盘", "<html>")
+
+    facts = audit(check)
+    assert any("完整页面" in item for item in facts)
+
+
+def test_close_partial_html_finishes_truncated_page():
+    """模型被截断时补个收尾，至少能打开；完整的页面一个字都不许动。"""
+    from orchestrator.execute import close_partial_html
+
+    whole = "<!DOCTYPE html><html><body>x</body></html>"
+    assert close_partial_html(whole) == (whole, False)
+
+    half = "<!DOCTYPE html><html><body><h1>日出"
+    body, patched = close_partial_html(half)
+    assert patched
+    assert body.rstrip().endswith("</html>")
+    assert "<h1>日出" in body
+
+    # 根本不是 HTML，不许硬补
+    assert close_partial_html("一段说明") == ("一段说明", False)
+
+
+def test_verify_prompt_marks_excerpt_as_excerpt():
+    """给刑部看的是节选，必须说明白——否则它把节选当成文件被截断，好活也判退。"""
+    from orchestrator.prompts import verify_prompt
+
+    full = verify_prompt(
+        "目标", "兵部", "做页面", "页面", ["写到了 </html>，是完整页面"], "x" * 100, cut=True
+    )
+    assert "节选，不是文件被截断" in full
+    assert "完整页面" in full
+
+    plain = verify_prompt("目标", "兵部", "做页面", "页面", [], "x" * 100, cut=False)
+    assert "节选，不是文件被截断" not in plain
+
+
+# ---------------------------------------------------------------- 汇总
+
+
+def test_parse_summary_reads_all_four_parts():
+    """结案要四样齐全：结语、结论、风险、未做。缺了「未做」就是只报喜。"""
+    raw = '{"结语":"做成了","结论":["第1条过"],"风险":["动画只有24帧"],"未做":["没有音效"]}'
+    summary = parse_summary(raw)
+
+    assert summary.verdict == "做成了"
+    assert summary.points == ["第1条过"]
+    assert summary.risks == ["动画只有24帧"]
+    assert summary.undone == ["没有音效"]
+    assert summary.source == "中堂"
+
+
+def test_parse_summary_rejects_empty():
+    assert parse_summary("看不懂") is None
+    assert parse_summary('{"别的":"东西"}') is None
+
+
+def test_summary_falls_back_when_model_silent():
+    """中堂没写出结案 → 程序版接手，但整场必须有结论。"""
+    from pathlib import Path
+
+    from orchestrator.execute import Check, Execution
+    from orchestrator.verify import Inspection, Verdict
+
+    class Dead:
+        def quick(self, prompt, **kwargs):
+            raise RuntimeError("端点没应")
+
+    execution = Execution(
+        "20261025-01",
+        Path("."),
+        Path("."),
+        [Check(0, "兵部", "升日动画", "", True, "待收成一件成品", "<html></html>")],
+    )
+    inspection = Inspection(
+        False, [Verdict(0, "兵部", "升日动画", False, "没证据", [], "客观+刑部")]
+    )
+    events = []
+    summary = run_summary(
+        Dead(), _order_one(), "做一页升日动画", execution, inspection, on_event=events.append
+    )
+
+    assert summary.source == "程序"
+    assert summary.undone
+    assert any(e["type"] == "summary/fallback" for e in events)
+    assert events[-1]["type"] == "summary/final"
+
+
+def test_summary_writes_case_file_outside_product_dir():
+    """结案文书要落盘，但绝不进成品夹。"""
+    import tempfile
+    from pathlib import Path
+
+    from orchestrator.execute import Check, Execution
+    from orchestrator.verify import Inspection, Verdict
+
+    class Zhongtang:
+        def quick(self, prompt, **kwargs):
+            assert "刑部勘验" in prompt
+            return '{"结语":"做成了","结论":["第1条过"],"风险":[],"未做":[]}'
+
+    execution = Execution(
+        "20261025-01",
+        Path("."),
+        Path("."),
+        [Check(0, "兵部", "升日动画", "", True, "成品已落盘", "<html></html>")],
+    )
+    inspection = Inspection(
+        True, [Verdict(0, "兵部", "升日动画", True, "", [], "客观+刑部")]
+    )
+    out = Path(tempfile.mkdtemp()) / "结案"
+    summary = run_summary(
+        Zhongtang(), _order_one(), "做一页升日动画", execution, inspection, out_dir=out
+    )
+
+    assert summary.path
+    text = Path(summary.path).read_text("utf-8")
+    assert "结案" in text
+    assert "做成了" in text
+    assert "## 风险" in text
+    assert "## 未做" in text
+
+
+def test_product_prefers_visual_over_longest():
+    """成品挑「最像成品」的那一件，不是最长的那一件。
+
+    实测踩过：吏部写了个 7868 字符的「升堂单」HTML，把兵部 3291 字符的动画页挤掉，
+    结案说「升日动画已交付」，成品却是任务清单。
+    """
+    import tempfile
+    from pathlib import Path
+
+    from orchestrator.schema import Order, Task
+
+    long_list = "<!DOCTYPE html><html><body>" + "清单条目。" * 2000 + "</body></html>"
+    short_anim = "<!DOCTYPE html><html><body><h1>日出</h1></body></html>"
+
+    class Pen:
+        def quick(self, prompt, **kwargs):
+            if "升堂单" in prompt:
+                return long_list
+            return short_anim
+
+    order = Order(
+        goal="做一页升日动画",
+        tasks=[
+            Task("吏部", "写一张升堂单", "升堂单"),
+            Task("兵部", "做一页升日动画", "升日动画"),
+        ],
+    )
+    root = Path(tempfile.mkdtemp())
+    result = execute_order(Pen(), order, "做一页升日动画", root, order_no="20261025-02")
+
+    assert result.product.is_file()
+    assert "升日动画" in result.product.name
+    assert len(result.product.read_bytes()) < len(long_list.encode("utf-8"))
+
+
+def test_product_skips_paper_deliverables():
+    """交付物是「清单/说明」的，就算写了 HTML、就算最长，也不许当成品。
+
+    实测踩过：礼部的活是「写一页升日动画的文案清单」（含「动画」但也含「清单」），
+    它交了一整个动画页，因为最长被选中，结案就说成了「动画已交付」。
+    """
+    import tempfile
+    from pathlib import Path
+
+    from orchestrator.schema import Order, Task
+
+    long_paper = "<!DOCTYPE html><html><body>" + "文案条目。" * 2000 + "</body></html>"
+    short_anim = "<!DOCTYPE html><html><body><h1>日出</h1></body></html>"
+
+    class Pen:
+        def quick(self, prompt, **kwargs):
+            if "文案" in prompt:
+                return long_paper
+            return short_anim
+
+    order = Order(
+        goal="做一页升日动画",
+        tasks=[
+            Task("礼部", "写一页升日动画的文案清单", "文案清单（含标题、按钮文字）"),
+            Task("兵部", "做一页升日动画", "升日动画"),
+        ],
+    )
+    root = Path(tempfile.mkdtemp())
+    result = execute_order(Pen(), order, "做一页升日动画", root, order_no="20261025-03")
+
+    assert result.product.is_file()
+    assert "升日动画" in result.product.name
+    assert len(result.product.read_bytes()) < len(long_paper.encode("utf-8"))
+    # 没当成品的那条不许记成品路径，否则刑部会以为每条都落了这个文件
+    merged = [c for c in result.checks if c.note == "已并入这一件成品"]
+    assert merged and all(not c.path for c in merged)
+
+
+def test_task_prompt_asks_for_docs_inside_the_page():
+    """交付物要「HTML + 使用说明」时，得让它把说明写进页面。
+
+    原来提示词一律写着「不写说明文字」，这种活就永远交不出来（实测踩过）。
+    """
+    from orchestrator.execute import task_prompt
+    from orchestrator.schema import Order
+
+    order = Order(goal="做动画", tasks=[])
+    prompt = task_prompt(order, "工部", "打包成 HTML 并附使用说明", "1个HTML文件及1份使用说明")
+    assert "页面末尾加一节" in prompt
+    assert "不写注释、不写多余说明" not in prompt
+
+    plain = task_prompt(order, "兵部", "做一页动画", "升日动画")
+    assert "不写注释、不写多余说明" in plain
+
+
+def test_html_body_is_not_thrown_away_as_side_paper():
+    """交付物写着「附使用说明」，但正文是一整个页面——不能当纸丢掉。"""
+    import tempfile
+    from pathlib import Path
+
+    from orchestrator.schema import Order, Task
+
+    page = (
+        "<!DOCTYPE html><html><body><h1>日出</h1>"
+        "<section>使用说明：点开始按钮</section></body></html>"
+    )
+
+    class Pen:
+        def quick(self, prompt, **kwargs):
+            return page
+
+    order = Order(
+        goal="做动画", tasks=[Task("工部", "打包成HTML并附使用说明", "1个HTML文件及1份使用说明")]
+    )
+    root = Path(tempfile.mkdtemp())
+    result = execute_order(Pen(), order, "做动画", root, order_no="20261025-04")
+
+    assert result.product.is_file()
+    assert "使用说明" in result.product.read_text("utf-8")
+
+
+def test_summary_tells_apart_never_delivered_and_retry_failed():
+    """「没交」和「补交过但没过」是两回事。混了，结案就会写成「未附交」。"""
+    from orchestrator.prompts import summary_prompt
+    from orchestrator.verify import Inspection, Verdict
+
+    inspection = Inspection(
+        False,
+        [Verdict(0, "工部", "说明", False, "缺使用说明", [], "客观+刑部", retried=True)],
+    )
+    text = summary_prompt("做动画", _order_one(), None, inspection)
+
+    assert "补交过，仍不合格" in text
+
+
+def test_summary_adds_retry_note_when_model_forgets():
+    """模型把「补交过但没过」写成「未交」时，程序补一句——事实不能被抹掉。"""
+    from orchestrator.summary import Summary, _ensure_retry_note
+    from orchestrator.verify import Inspection, Verdict
+
+    inspection = Inspection(
+        False, [Verdict(0, "礼部", "清单", False, "缺清单", [], "客观+刑部", retried=True)]
+    )
+    summary = Summary(
+        verdict="已交付", points=[], risks=[], undone=["未交付清单文件"], source="中堂"
+    )
+    out = _ensure_retry_note(summary, inspection)
+
+    assert any("补交过一轮" in item for item in out.undone)
+
+
+def test_summary_does_not_duplicate_retry_note():
+    """模型已经写清楚补交过，就别再补一遍。"""
+    from orchestrator.summary import Summary, _ensure_retry_note
+    from orchestrator.verify import Inspection, Verdict
+
+    inspection = Inspection(
+        False, [Verdict(0, "礼部", "清单", False, "缺清单", [], "客观+刑部", retried=True)]
+    )
+    summary = Summary(verdict="已交付", undone=["第 1 条补交过仍不合格"], source="中堂")
+    out = _ensure_retry_note(summary, inspection)
+
+    assert len(out.undone) == 1
 
 
 # ---------------------------------------------------------------- 跑起来
